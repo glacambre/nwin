@@ -4,6 +4,9 @@ use std::collections::HashMap;
 use std::env;
 use std::time::Duration;
 use std::thread::sleep;
+use std::time::Instant;
+use std::convert::TryInto;
+use std::convert::TryFrom;
 
 extern crate sdl2;
 
@@ -13,6 +16,7 @@ use sdl2::rect::Rect;
 
 use neovim_lib::{Neovim, NeovimApi, Session, UiAttachOptions, Value};
 
+type AtlasIndexKey = u64;
 type NvimRow = usize;
 type NvimColumn = usize;
 type NvimWidth = usize;
@@ -257,7 +261,7 @@ impl NvimState {
                 "strikethrough" => { attr.strikethrough = v.as_bool().unwrap(); }
                 "underline" => { attr.underline = v.as_bool().unwrap(); }
                 "undercurl" => { attr.undercurl = v.as_bool().unwrap(); }
-                _ => { panic!("Unsupported hl attr key {}", key); }
+                _ => { println!("Unsupported hl attr key {} in {:?}", key, map); }
             }
         }
     }
@@ -412,6 +416,16 @@ pub fn main() -> Result<(), String> {
     let font_width = t.width;
     let font_height = t.height;
 
+    // Create texture atlas
+    // Start with something that can host ~128 chars * 10 highlights
+    let atlas_width = font_width * 1000;
+    let mut atlas_texture = texture_creator.create_texture_target(None,
+        atlas_width,
+        font_height,
+    ).unwrap();
+    let mut atlas_index : HashMap<AtlasIndexKey, (i32, u32)> = HashMap::new();
+    let mut next_atlas_slot = font_width as i32;
+
     nvim.ui_attach(
         (window_rectangle.width() / font_width).into(),
         (window_rectangle.height() / font_height).into(),
@@ -430,42 +444,14 @@ pub fn main() -> Result<(), String> {
     let mut cursor_rect = Rect::new(0, 0, 0, 0);
 
     'running: loop {
+        let now = Instant::now();
+        // 1) Process events from neovim
         has_flushed = false;
         while let Ok((str, messages)) = chan.try_recv() {
             has_flushed = handle_message(&mut state, &str, messages) || has_flushed;
         }
-        let mut input_string : String = "".to_owned();
-        for event in event_pump.poll_iter() {
-            match event {
-                Event::Quit { .. } => break 'running,
-                Event::KeyDown { .. } => {
-                    if let Some(str) = keys::nvim_event_representation(event) {
-                        input_string.push_str(&str);
-                    }
-                },
-                Event::TextInput { text: s, .. } => {
-                    for c in s.chars() {
-                        // NOTE: We ignore space because it has a non-literal repr and it's better
-                        // to have it go through the keydown nvim.input, in order to be able to
-                        // handle both <Space> and <S-Space> (we can't tell <S-Space> from a
-                        // TextInput event).
-                        if c != ' ' {
-                            if let Some(s) = keys::nvim_char_representation(c) {
-                                input_string.push_str(s);
-                            } else {
-                                input_string.push_str(&c.to_string());
-                            }
-                        }
-                    }
-                }
-                // _ => println!("{:#?}", event),
-                _ => {},
-            } 
-        }
-        if input_string != "" {
-            nvim.input(&input_string).unwrap();
-        }
 
+        // 2) React to window size changes
         {
             // Update the window title.
             let window = canvas.window_mut();
@@ -498,75 +484,137 @@ pub fn main() -> Result<(), String> {
                 window_rectangle.set_height(new_size.1);
             }
 
-            if has_flushed {
-                let default_hl = state.hl_attrs.get(&0).unwrap();
-                let default_bg = default_hl.background;
-                let default_fg = default_hl.foreground;
-                if let Some(grid) = state.grids.get_mut(&1) {
-                    for d in &grid.damages {
-                        if let Damage::Cell{ row, column, width, height } = d {
-                            let damage_top = *row;
-                            let mut damage_bottom = row + height;
-                            if damage_bottom > grid.get_height() {
-                                damage_bottom = grid.get_height();
-                            }
-                            for current_row in damage_top .. damage_bottom {
-                                let damage_left = *column;
-                                let mut damage_right = column + width;
-                                if damage_right > grid.get_width() {
-                                    damage_right = grid.get_width();
-                                }
-                                for current_column in damage_left .. damage_right {
-                                    let attr_id = grid.colors[current_row][current_column];
-                                    if let Some(hl_attr) = state.hl_attrs.get(&attr_id) {
-                                        canvas.with_texture_canvas(&mut big_texture, |canvas| {
-                                            let cell_rect = Rect::new(
-                                                (current_column as i32) * (font_width as i32),
-                                                (current_row as i32) * (font_height as i32),
-                                                font_width,
-                                                font_height,
-                                            );
-                                            let bg = hl_attr.background.or_else(||default_bg).unwrap();
-                                            let fg = hl_attr.foreground.or_else(||default_fg).unwrap();
-                                            canvas.set_draw_color(bg);
-                                            canvas.fill_rect(cell_rect);
+        }
 
-                                            if let Some(char) = grid.chars[current_row][current_column] {
-                                                let surface = font
-                                                    .render(&char.to_string())
-                                                    .blended(fg)
-                                                    .map_err(|e| e.to_string()).unwrap();
-                                                let texture = texture_creator
-                                                    .create_texture_from_surface(&surface)
-                                                    .map_err(|e| e.to_string()).unwrap();
-                                                canvas.copy(&texture, None, cell_rect).unwrap();
-                                            }
-                                        }).unwrap();
-                                        // canvas.copy(&big_texture, window_rectangle, window_rectangle).unwrap();
-                                        // canvas.present();
-                                    }
-                                }
-                            }
-                        }
-
-                        canvas.copy(&big_texture, window_rectangle, window_rectangle).unwrap();
-
-                        let (row, column) = grid.get_cursor_pos();
-                        let attr_id = grid.colors[row as usize][column as usize];
-                        if let Some(hl_attr) = state.hl_attrs.get(&attr_id) {
-                            canvas.set_draw_color(hl_attr.foreground.or_else(||default_fg).unwrap());
-                            cursor_rect.set_x((column as i32) * (font_width as i32));
-                            cursor_rect.set_y((row as i32) * (font_height as i32));
-                            cursor_rect.set_width(font_width);
-                            cursor_rect.set_height(font_height);
-                            canvas.fill_rect(cursor_rect).unwrap();
-                        }
-                        canvas.present();
+        // 3) Redraw grid damages
+        if has_flushed {
+            let default_hl = state.hl_attrs.get(&0).unwrap();
+            let default_bg = default_hl.background;
+            let default_fg = default_hl.foreground;
+            let grid = state.grids.get_mut(&1).unwrap();
+            for d in &grid.damages {
+                if let Damage::Cell{ row, column, width, height } = d {
+                    let damage_top = *row;
+                    let mut damage_bottom = row + height;
+                    if damage_bottom > grid.get_height() {
+                        damage_bottom = grid.get_height();
                     }
-                    grid.damages.truncate(0);
+                    for current_row in damage_top .. damage_bottom {
+                        let damage_left = *column;
+                        let mut damage_right = column + width;
+                        if damage_right > grid.get_width() {
+                            damage_right = grid.get_width();
+                        }
+                        for current_column in damage_left .. damage_right {
+                            let char_id = grid.chars[current_row][current_column].or_else(||Some(0 as char)).unwrap() as u64;
+                            let attr_id = grid.colors[current_row][current_column];
+                            let atlas_key = ((attr_id & (2u64.pow(32) - 1)) << 32)
+                                | (char_id & (2u64.pow(32) - 1));
+                            if let None = atlas_index.get(&atlas_key) {
+                                let hl_attr = state.hl_attrs.get(&attr_id).unwrap();
+                                canvas.with_texture_canvas(&mut atlas_texture, |canvas| {
+                                    let bg = hl_attr.background.or_else(||default_bg).unwrap();
+                                    let fg = hl_attr.foreground.or_else(||default_fg).unwrap();
+                                    canvas.set_draw_color(bg);
+
+                                    if let Some(char) = grid.chars[current_row][current_column] {
+                                        let surface = font
+                                            .render(&char.to_string())
+                                            .blended(fg)
+                                            .map_err(|e| e.to_string()).unwrap();
+                                        let texture = texture_creator
+                                            .create_texture_from_surface(&surface)
+                                            .map_err(|e| e.to_string()).unwrap();
+                                        let t = texture.query();
+                                        let cell_rect = Rect::new(
+                                            next_atlas_slot,
+                                            0,
+                                            t.width,
+                                            t.height,
+                                        );
+                                        canvas.fill_rect(cell_rect);
+                                        canvas.copy(&texture, None, cell_rect).unwrap();
+                                        atlas_index.insert(atlas_key, (next_atlas_slot, t.width));
+                                        next_atlas_slot += t.width as i32;
+                                    } else {
+                                        let cell_rect = Rect::new(
+                                            next_atlas_slot,
+                                            0,
+                                            font_width,
+                                            font_height,
+                                        );
+                                        canvas.fill_rect(cell_rect);
+                                        atlas_index.insert(atlas_key, (next_atlas_slot, font_width));
+                                        next_atlas_slot += font_width as i32;
+                                    }
+                                }).unwrap();
+                            }
+                            let (pos, width) = atlas_index.get(&atlas_key).unwrap();
+                            canvas.with_texture_canvas(&mut big_texture, |canvas| {
+                                let from = Rect::new(*pos, 0, *width, font_height);
+                                let to = Rect::new(
+                                    (current_column as i32) * (font_width as i32),
+                                    (current_row as i32) * (font_height as i32),
+                                    *width,
+                                    font_height,
+                                );
+                                canvas.copy(&atlas_texture, from, to);
+                            });
+                        }
+                    }
                 }
             }
-            sleep(Duration::from_millis(1000/60));
+            canvas.copy(&big_texture, window_rectangle, window_rectangle).unwrap();
+
+            let (row, column) = grid.get_cursor_pos();
+            let attr_id = grid.colors[row as usize][column as usize];
+            if let Some(hl_attr) = state.hl_attrs.get(&attr_id) {
+                canvas.set_draw_color(hl_attr.foreground.or_else(||default_fg).unwrap());
+                cursor_rect.set_x((column as i32) * (font_width as i32));
+                cursor_rect.set_y((row as i32) * (font_height as i32));
+                cursor_rect.set_width(font_width);
+                cursor_rect.set_height(font_height);
+                canvas.fill_rect(cursor_rect).unwrap();
+            }
+            canvas.present();
+            grid.damages.truncate(0);
+        }
+
+        // Use the time we have left before having to display the next frame to read events from
+        // ui and forward them to neovim if necessary.
+        let mut time_left = (1000/60) - i64::try_from(now.elapsed().as_millis()).unwrap() - 1;
+        if time_left < 1 {
+            time_left = 0
+        }
+        let mut input_string = "".to_owned();
+        for event in event_pump.wait_timeout_iter(time_left as u32) {
+            match event {
+                Event::Quit { .. } => { nvim.quit_no_save(); },
+                Event::KeyDown { .. } => {
+                    if let Some(str) = keys::nvim_event_representation(event) {
+                        input_string.push_str(&str);
+                    }
+                },
+                Event::TextInput { text: s, .. } => {
+                    for c in s.chars() {
+                        // NOTE: We ignore space because it has a non-literal repr and it's better
+                        // to have it go through the keydown nvim.input, in order to be able to
+                        // handle both <Space> and <S-Space> (we can't tell <S-Space> from a
+                        // TextInput event).
+                        if c != ' ' {
+                            if let Some(s) = keys::nvim_char_representation(c) {
+                                input_string.push_str(s);
+                            } else {
+                                input_string.push_str(&c.to_string());
+                            }
+                        }
+                    }
+                }
+                _ => {},
+            }
+        }
+        if input_string != "" {
+            nvim.input(&input_string);
         }
     }
 
