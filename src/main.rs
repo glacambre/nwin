@@ -2,10 +2,7 @@ mod keys;
 
 use std::collections::HashMap;
 use std::env;
-use std::time::Duration;
-use std::thread::sleep;
 use std::time::Instant;
-use std::convert::TryInto;
 use std::convert::TryFrom;
 
 extern crate sdl2;
@@ -30,7 +27,7 @@ enum Damage {
         width: NvimWidth,
         height: NvimHeight,
     },
-    HorizontalScroll {
+    VerticalScroll {
         to: NvimRow,
         from: NvimRow,
         height: NvimHeight,
@@ -213,32 +210,40 @@ impl NvimState {
         }
         grid.damages.push(Damage::Cell { row: row, column: col_start, width: damage_length, height: 1 });
     }
-    pub fn grid_scroll (&mut self, id: NvimGridId, top: NvimRow, bot: NvimRow, _left: NvimColumn, _right: NvimColumn, rows: NvimHeight, _cols: NvimWidth) {
+    pub fn grid_scroll (&mut self, id: NvimGridId, top: NvimRow, bot: NvimRow, _left: NvimColumn, _right: NvimColumn, rows: i64, _cols: i64) {
+        assert!(_cols == 0);
         let grid = self.grids.get_mut(&id).unwrap();
         if rows > 0 {
-            let bottom = if (bot + rows) >= grid.get_height() {
-                grid.get_height() - rows
+            // Moving characters up
+            let r : usize = rows as usize;
+            let bottom = if (bot + r) >= grid.get_height() {
+                grid.get_height() - r
             } else {
                 bot
             };
             for y in top .. bottom {
                 for x in 0 .. grid.get_width() {
-                    grid.chars[y][x] = grid.chars[y + rows][x];
-                    grid.colors[y][x] = grid.colors[y + rows][x];
+                    grid.chars[y][x] = grid.chars[y + r][x];
+                    grid.colors[y][x] = grid.colors[y + r][x];
                 }
             }
-            // TODO: Make this a HorizontalScroll!
-            grid.damages.push(Damage::Cell { row: 0, column: 0, width: grid.get_width(), height: grid.get_height() });
+            grid.damages.push(Damage::VerticalScroll { from: top + r, to: top, height: bottom - top });
         } else if rows < 0 {
+            // Moving characters down
             let mut y = bot - 1;
-            while y >= top && (y + rows) >= 0 {
+            while y >= top && ((y as i64) + rows) >= 0 {
                 for x in 0 .. grid.get_width() {
-                    grid.chars[y][x] = grid.chars[y + rows][x];
-                    grid.colors[y][x] = grid.colors[y + rows][x];
+                    grid.chars[y][x] = grid.chars[((y as i64) + rows) as usize][x];
+                    grid.colors[y][x] = grid.colors[((y as i64) + rows) as usize][x];
                 }
                 y -= 1
             }
-            grid.damages.push(Damage::Cell { row: 0, column: 0, width: grid.get_width(), height: grid.get_height() });
+            // You don't have to understand this, just know it works.
+            grid.damages.push(Damage::VerticalScroll {
+                from: top,
+                to: top + (rows.abs() as usize),
+                height: bot - 1 - y,
+            });
         }
     }
     pub fn hl_attr_define (&mut self, id: u64, map: &Vec<(Value, Value)>) {
@@ -273,8 +278,7 @@ fn handle_message(state: &mut NvimState, method: &str, args: Vec<Value>) -> bool
         "redraw" => for update_events in args {
             if let Value::Array(update_events) = update_events {
                 let mut update_events_iter = update_events.into_iter();
-                let event_name = update_events_iter.next();
-                if let Some(event_name) = event_name {
+                if let Some(event_name) = update_events_iter.next() {
                     if let Some(str) = event_name.as_str() {
                         for events in update_events_iter {
                         let mut args = if let Value::Array(a) = events {
@@ -329,8 +333,8 @@ fn handle_message(state: &mut NvimState, method: &str, args: Vec<Value>) -> bool
                                     args.next().unwrap().as_u64().unwrap() as NvimRow,
                                     args.next().unwrap().as_u64().unwrap() as NvimColumn,
                                     args.next().unwrap().as_u64().unwrap() as NvimColumn,
-                                    args.next().unwrap().as_u64().unwrap() as NvimWidth,
-                                    args.next().unwrap().as_u64().unwrap() as NvimHeight,
+                                    args.next().unwrap().as_i64().unwrap(),
+                                    args.next().unwrap().as_i64().unwrap(),
                                 );
                             }
                             "hl_attr_define" => {
@@ -344,7 +348,7 @@ fn handle_message(state: &mut NvimState, method: &str, args: Vec<Value>) -> bool
                             }
                             "win_viewport" => {}, // Don't care about win_viewport, stop spamming about it!
                             _ => {
-                                println!("Unhandled {}", str);
+                                // println!("Unhandled {}", str);
                             }
                         }
                         }
@@ -430,6 +434,7 @@ pub fn main() -> Result<(), String> {
         (window_rectangle.width() / font_width).into(),
         (window_rectangle.height() / font_height).into(),
         UiAttachOptions::new()
+        .set_rgb(true)
         .set_linegrid_external(true)
     ).unwrap();
 
@@ -440,6 +445,11 @@ pub fn main() -> Result<(), String> {
         window_rectangle.width(),
         window_rectangle.height(),
     ).unwrap();
+    let mut big_texture_copy = texture_creator.create_texture_target(None,
+        window_rectangle.width(),
+        window_rectangle.height(),
+    ).unwrap();
+
 
     let mut cursor_rect = Rect::new(0, 0, 0, 0);
 
@@ -466,6 +476,10 @@ pub fn main() -> Result<(), String> {
                 // Change size of rendering texture
                 let old_texture = big_texture;
                 big_texture = texture_creator.create_texture_target(
+                    None,
+                    new_size.0,
+                    new_size.1).unwrap();
+                big_texture_copy = texture_creator.create_texture_target(
                     None,
                     new_size.0,
                     new_size.1).unwrap();
@@ -532,7 +546,7 @@ pub fn main() -> Result<(), String> {
                                             t.width,
                                             t.height,
                                         );
-                                        canvas.fill_rect(cell_rect);
+                                        canvas.fill_rect(cell_rect).unwrap();
                                         canvas.copy(&texture, None, cell_rect).unwrap();
                                         atlas_index.insert(atlas_key, (next_atlas_slot, t.width));
                                         next_atlas_slot += t.width as i32;
@@ -543,7 +557,7 @@ pub fn main() -> Result<(), String> {
                                             font_width,
                                             font_height,
                                         );
-                                        canvas.fill_rect(cell_rect);
+                                        canvas.fill_rect(cell_rect).unwrap();
                                         atlas_index.insert(atlas_key, (next_atlas_slot, font_width));
                                         next_atlas_slot += font_width as i32;
                                     }
@@ -558,10 +572,29 @@ pub fn main() -> Result<(), String> {
                                     *width,
                                     font_height,
                                 );
-                                canvas.copy(&atlas_texture, from, to);
-                            });
+                                canvas.copy(&atlas_texture, from, to).unwrap();
+                            }).unwrap();
                         }
                     }
+                } else if let Damage::VerticalScroll{ from, to, height } = d {
+                    canvas.with_texture_canvas(&mut big_texture_copy, |canvas| {
+                        canvas.copy(&big_texture, None, None).unwrap();
+                    }).unwrap();
+                    canvas.with_texture_canvas(&mut big_texture, |canvas| {
+                        let f = Rect::new(
+                            0,
+                            (*from as i32) * (font_height as i32),
+                            window_rectangle.width(),
+                            (*height as u32) * (font_height as u32),
+                        );
+                        let t = Rect::new(
+                            0,
+                            (*to as i32) * (font_height as i32),
+                            window_rectangle.width(),
+                            (*height as u32) * (font_height as u32)
+                        );
+                        canvas.copy(&big_texture_copy, f, t).unwrap();
+                    }).unwrap();
                 }
             }
             canvas.copy(&big_texture, window_rectangle, window_rectangle).unwrap();
@@ -589,7 +622,7 @@ pub fn main() -> Result<(), String> {
         let mut input_string = "".to_owned();
         for event in event_pump.wait_timeout_iter(time_left as u32) {
             match event {
-                Event::Quit { .. } => { nvim.quit_no_save(); },
+                Event::Quit { .. } => { nvim.quit_no_save().unwrap(); break 'running; },
                 Event::KeyDown { .. } => {
                     if let Some(str) = keys::nvim_event_representation(event) {
                         input_string.push_str(&str);
@@ -614,7 +647,7 @@ pub fn main() -> Result<(), String> {
             }
         }
         if input_string != "" {
-            nvim.input(&input_string);
+            nvim.input(&input_string).unwrap();
         }
     }
 
