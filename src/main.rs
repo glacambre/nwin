@@ -1,6 +1,8 @@
 mod keys;
 
 use std::collections::HashMap;
+use std::collections::VecDeque;
+use std::collections::vec_deque::Drain;
 use std::env;
 use std::time::Instant;
 use std::convert::TryFrom;
@@ -272,22 +274,17 @@ impl NvimState {
     }
 }
 
-fn handle_message(state: &mut NvimState, method: &str, args: Vec<Value>) -> bool {
-    let mut has_flushed = false;
-    match method {
-        "redraw" => for update_events in args {
-            if let Value::Array(update_events) = update_events {
-                let mut update_events_iter = update_events.into_iter();
-                if let Some(event_name) = update_events_iter.next() {
-                    if let Some(str) = event_name.as_str() {
-                        for events in update_events_iter {
-                        let mut args = if let Value::Array(a) = events {
-                            a
-                        } else {
-                            vec![]
-                        }.into_iter();
+fn do_redraw(state: &mut NvimState, args: Drain<'_, Value>) {
+    for update_events in args {
+        if let Value::Array(update_events) = update_events {
+            let mut update_events_iter = update_events.into_iter();
+            if let Some(event_name) = update_events_iter.next() {
+                if let Some(str) = event_name.as_str() {
+                    for events in update_events_iter {
+                        let arr = events.as_array();
                         match str {
                             "default_colors_set" => {
+                                let mut args = arr.unwrap().into_iter();
                                 state.default_colors_set(
                                     args.next().map(|v| v.as_u64().unwrap()),
                                     args.next().map(|v| v.as_u64().unwrap()),
@@ -295,11 +292,13 @@ fn handle_message(state: &mut NvimState, method: &str, args: Vec<Value>) -> bool
                                 );
                             }
                             "grid_clear" => {
+                                let mut args = arr.unwrap().into_iter();
                                 state.grid_clear(
                                     args.next().unwrap().as_u64().unwrap() as NvimGridId,
                                 );
                             }
                             "grid_cursor_goto" => {
+                                let mut args = arr.unwrap().into_iter();
                                 state.grid_cursor_goto(
                                     args.next().unwrap().as_u64().unwrap() as NvimGridId,
                                     args.next().unwrap().as_u64().unwrap() as NvimRow,
@@ -307,6 +306,7 @@ fn handle_message(state: &mut NvimState, method: &str, args: Vec<Value>) -> bool
                                 );
                             }
                             "grid_line" => {
+                                let mut args = arr.unwrap().into_iter();
                                 let grid = args.next().unwrap().as_u64().unwrap() as NvimGridId;
                                 let row = args.next().unwrap().as_u64().unwrap() as NvimRow;
                                 let col_start = args.next().unwrap().as_u64().unwrap() as NvimColumn;
@@ -320,6 +320,7 @@ fn handle_message(state: &mut NvimState, method: &str, args: Vec<Value>) -> bool
                                 }
                             }
                             "grid_resize" => {
+                                let mut args = arr.unwrap().into_iter();
                                 state.grid_resize(
                                     args.next().unwrap().as_u64().unwrap() as NvimGridId,
                                     args.next().unwrap().as_u64().unwrap() as NvimWidth,
@@ -327,6 +328,7 @@ fn handle_message(state: &mut NvimState, method: &str, args: Vec<Value>) -> bool
                                 );
                             }
                             "grid_scroll" => {
+                                let mut args = arr.unwrap().into_iter();
                                 state.grid_scroll(
                                     args.next().unwrap().as_u64().unwrap() as NvimGridId,
                                     args.next().unwrap().as_u64().unwrap() as NvimRow,
@@ -338,35 +340,28 @@ fn handle_message(state: &mut NvimState, method: &str, args: Vec<Value>) -> bool
                                 );
                             }
                             "hl_attr_define" => {
+                                let mut args = arr.unwrap().into_iter();
                                 state.hl_attr_define(
                                     args.next().unwrap().as_u64().unwrap(),
                                     args.next().unwrap().as_map().unwrap()
                                 );
-                            }
-                            "flush" => {
-                                has_flushed = true;
                             }
                             "win_viewport" => {}, // Don't care about win_viewport, stop spamming about it!
                             _ => {
                                 // println!("Unhandled {}", str);
                             }
                         }
-                        }
-                    } else {
-                        eprintln!("Found non-str event name!");
                     }
                 } else {
-                    eprintln!("No event name!");
+                    eprintln!("Found non-str event name!");
                 }
             } else {
-                eprintln!("Unsupported event type {:?}", update_events);
+                eprintln!("No event name!");
             }
-        }
-        _ => {
-            eprintln!("Unsupported notification method: {}", method);
+        } else {
+            eprintln!("Unsupported event type {:?}", update_events);
         }
     }
-    has_flushed
 }
 
 pub fn main() -> Result<(), String> {
@@ -440,7 +435,6 @@ pub fn main() -> Result<(), String> {
 
     let mut event_pump = sdl_context.event_pump().map_err(|e| e.to_string())?;
 
-    let mut has_flushed;
     let mut big_texture = texture_creator.create_texture_target(None,
         window_rectangle.width(),
         window_rectangle.height(),
@@ -452,13 +446,37 @@ pub fn main() -> Result<(), String> {
 
 
     let mut cursor_rect = Rect::new(0, 0, 0, 0);
+    let mut redraw_messages = VecDeque::new();
 
     'running: loop {
         let now = Instant::now();
         // 1) Process events from neovim
-        has_flushed = false;
         while let Ok((str, messages)) = chan.try_recv() {
-            has_flushed = handle_message(&mut state, &str, messages) || has_flushed;
+            if str == "redraw" {
+                // Copy messages into the vecdequeue, remember position of last flush if there's
+                // one.
+                let len = messages.len();
+                let mut i = 0;
+                let mut last_flush_position = None;
+                for msg in messages {
+                    if let Value::Array(ref events) = msg {
+                        if let Some(str) = events.into_iter().next() {
+                            if let Some(str) = str.as_str() {
+                                if str == "flush" {
+                                    last_flush_position = Some(len - i);
+                                }
+                            }
+                        }
+                    }
+                    i += 1;
+                    redraw_messages.push_back(msg);
+                }
+                if let Some(pos) = last_flush_position {
+                    do_redraw(&mut state, redraw_messages.drain(0..redraw_messages.len() - pos));
+                }
+            } else {
+                eprintln!("Unexpected message: {}", str);
+            }
         }
 
         // 2) React to window size changes
@@ -501,8 +519,7 @@ pub fn main() -> Result<(), String> {
         }
 
         // 3) Redraw grid damages
-        if has_flushed {
-            let default_hl = state.hl_attrs.get(&0).unwrap();
+        if let Some(default_hl) = state.hl_attrs.get(&0) {
             let default_bg = default_hl.background;
             let default_fg = default_hl.foreground;
             let grid = state.grids.get_mut(&1).unwrap();
