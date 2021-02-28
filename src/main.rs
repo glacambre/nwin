@@ -366,6 +366,14 @@ fn do_redraw(state: &mut NvimState, args: Drain<'_, Value>) {
 
 pub fn main() -> Result<(), String> {
     env::remove_var("NVIM_LISTEN_ADDRESS");
+
+    let mut print_fps = false;
+    for argument in env::args() {
+        if argument == "--print-fps" {
+            print_fps = true;
+        }
+    }
+
     let session = Session::new_child().unwrap();
     let mut nvim = Neovim::new(session);
     let mut state = NvimState::new();
@@ -444,9 +452,10 @@ pub fn main() -> Result<(), String> {
         window_rectangle.height(),
     ).unwrap();
 
-
     let mut cursor_rect = Rect::new(0, 0, 0, 0);
     let mut redraw_messages = VecDeque::new();
+    let mut last_second = Instant::now();
+    let mut frame_count = 0;
 
     'running: loop {
         let now = Instant::now();
@@ -627,6 +636,14 @@ pub fn main() -> Result<(), String> {
                 canvas.fill_rect(cursor_rect).unwrap();
             }
             canvas.present();
+            if print_fps {
+                frame_count += 1;
+                if last_second.elapsed().as_secs() > 0 {
+                    println!("{} fps", frame_count);
+                    frame_count = 0;
+                    last_second = Instant::now();
+                }
+            }
             grid.damages.truncate(0);
         }
 
