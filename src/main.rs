@@ -169,7 +169,12 @@ impl NvimState {
             grid.chars.truncate(height);
             grid.colors.truncate(height);
         } else {
-            grid.damages.push(Damage::Cell { row:                     grid.get_height(), column:                    0, width:                    width, height:                    height - grid.get_height() }); 
+            grid.damages.push(Damage::Cell {
+                row: grid.get_height(),
+                column: 0,
+                width,
+                height: height - grid.get_height()
+            }); 
             for _count in grid.get_height() .. height {
                 grid.chars.push(vec![None; width]);
                 grid.colors.push(vec![0; width]);
@@ -210,7 +215,7 @@ impl NvimState {
             }
             damage_length += repeat;
         }
-        grid.damages.push(Damage::Cell { row: row, column: col_start, width: damage_length, height: 1 });
+        grid.damages.push(Damage::Cell { row, column: col_start, width: damage_length, height: 1 });
     }
     pub fn grid_scroll (&mut self, id: NvimGridId, top: NvimRow, bot: NvimRow, _left: NvimColumn, _right: NvimColumn, rows: i64, _cols: i64) {
         assert!(_cols == 0);
