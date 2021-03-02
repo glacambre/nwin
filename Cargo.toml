@@ -1,0 +1,14 @@
+[package]
+name = "nwin"
+version = "0.1.0"
+authors = ["glacambre <code@lacamb.re>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+neovim-lib = { git = "https://github.com/glacambre/neovim-lib" }
+
+[dependencies.sdl2]
+version = "0.34"
+features = ["ttf", "unsafe_textures"]

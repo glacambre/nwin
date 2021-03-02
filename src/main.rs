@@ -12,6 +12,12 @@ extern crate sdl2;
 use sdl2::event::Event;
 use sdl2::pixels::Color;
 use sdl2::rect::Rect;
+use sdl2::video::Window;
+use sdl2::render::Canvas;
+use sdl2::render::Texture;
+use sdl2::render::TextureCreator;
+use sdl2::video::WindowContext;
+use sdl2::VideoSubsystem;
 
 use neovim_lib::{Neovim, NeovimApi, Session, UiAttachOptions, Value};
 
@@ -369,6 +375,53 @@ fn do_redraw(state: &mut NvimState, args: Drain<'_, Value>) {
     }
 }
 
+struct SDLGrid {
+    canvas: Canvas<Window>,
+    atlas: Texture,
+    atlas_index: HashMap<AtlasIndexKey, (i32, u32)>,
+    atlas_next_slot: i32,
+    big_texture: Texture,
+    big_texture_copy: Texture,
+    texture_creator: TextureCreator<WindowContext>,
+}
+
+impl SDLGrid {
+    pub fn new (video_subsystem: &VideoSubsystem, font_width: u32, font_height: u32) -> SDLGrid {
+        let window = video_subsystem
+            .window("Nwin", 800, 600)
+            .resizable()
+            .build()
+            .unwrap();
+        let canvas = window
+            .into_canvas()
+            .present_vsync()
+            .build()
+            .unwrap();
+        let texture_creator = canvas.texture_creator();
+        let big_texture = texture_creator.create_texture_target(
+            None,
+            800,
+            600).unwrap();
+        let big_texture_copy = texture_creator.create_texture_target(
+            None,
+            800,
+            600).unwrap();
+        let atlas = texture_creator.create_texture_target(
+            None,
+            256 * font_width,
+            font_height).unwrap();
+        SDLGrid {
+            canvas,
+            atlas,
+            atlas_index: HashMap::new(),
+            atlas_next_slot: 0,
+            big_texture,
+            big_texture_copy,
+            texture_creator,
+        }
+    }
+}
+
 pub fn main() -> Result<(), String> {
     env::remove_var("NVIM_LISTEN_ADDRESS");
 
@@ -400,7 +453,7 @@ pub fn main() -> Result<(), String> {
         .present_vsync()
         .build()
         .map_err(|e| e.to_string())?;
-    canvas.present();
+    // canvas.present();
 
     {
         let window = canvas.window_mut();
@@ -428,16 +481,6 @@ pub fn main() -> Result<(), String> {
     let font_width = t.width;
     let font_height = t.height;
 
-    // Create texture atlas
-    // Start with something that can host ~128 chars * 10 highlights
-    let atlas_width = font_width * 1000;
-    let mut atlas_texture = texture_creator.create_texture_target(None,
-        atlas_width,
-        font_height,
-    ).unwrap();
-    let mut atlas_index : HashMap<AtlasIndexKey, (i32, u32)> = HashMap::new();
-    let mut next_atlas_slot = font_width as i32;
-
     nvim.ui_attach(
         (window_rectangle.width() / font_width).into(),
         (window_rectangle.height() / font_height).into(),
@@ -448,19 +491,12 @@ pub fn main() -> Result<(), String> {
 
     let mut event_pump = sdl_context.event_pump().map_err(|e| e.to_string())?;
 
-    let mut big_texture = texture_creator.create_texture_target(None,
-        window_rectangle.width(),
-        window_rectangle.height(),
-    ).unwrap();
-    let mut big_texture_copy = texture_creator.create_texture_target(None,
-        window_rectangle.width(),
-        window_rectangle.height(),
-    ).unwrap();
-
     let mut cursor_rect = Rect::new(0, 0, 0, 0);
     let mut redraw_messages = VecDeque::new();
     let mut last_second = Instant::now();
     let mut frame_count = 0;
+
+    let mut sdl_grids : HashMap<NvimGridId, SDLGrid> = HashMap::new();
 
     'running: loop {
         let now = Instant::now();
@@ -493,163 +529,139 @@ pub fn main() -> Result<(), String> {
             }
         }
 
-        // 2) React to window size changes
-        {
-            // Update the window title.
-            let window = canvas.window_mut();
-
-            let new_size = window.size();
-            if new_size.0 != window_rectangle.width() || new_size.1 != window_rectangle.height() {
-                // Inform neovim of the change
-                nvim.ui_try_resize_grid(1,
-                    (new_size.0 / font_width).into(),
-                    (new_size.1 / font_height).into(),
-                ).unwrap();
-                // Change size of rendering texture
-                let old_texture = big_texture;
-                big_texture = texture_creator.create_texture_target(
-                    None,
-                    new_size.0,
-                    new_size.1).unwrap();
-                big_texture_copy = texture_creator.create_texture_target(
-                    None,
-                    new_size.0,
-                    new_size.1).unwrap();
-                // Copy old rendering texture to new one
-                let r = Rect::new(
-                    0,
-                    0,
-                    std::cmp::min(new_size.1, window_rectangle.width()),
-                    std::cmp::min(new_size.0, window_rectangle.height())
-                );
-                canvas.with_texture_canvas(&mut big_texture, |canvas| {
-                    canvas.copy(&old_texture, r, r).unwrap();
-                }).unwrap();
-                // Remember the size of the new window
-                window_rectangle.set_width(new_size.0);
-                window_rectangle.set_height(new_size.1);
-            }
-
-        }
-
         // 3) Redraw grid damages
         if let Some(default_hl) = state.hl_attrs.get(&0) {
             let default_bg = default_hl.background;
             let default_fg = default_hl.foreground;
-            let grid = state.grids.get_mut(&1).unwrap();
-            for d in &grid.damages {
-                if let Damage::Cell{ row, column, width, height } = d {
-                    let damage_top = *row;
-                    let mut damage_bottom = row + height;
-                    if damage_bottom > grid.get_height() {
-                        damage_bottom = grid.get_height();
-                    }
-                    for current_row in damage_top .. damage_bottom {
-                        let damage_left = *column;
-                        let mut damage_right = column + width;
-                        if damage_right > grid.get_width() {
-                            damage_right = grid.get_width();
+            for (key, grid) in state.grids.iter_mut() {
+                let SDLGrid {
+                    canvas,
+                    atlas,
+                    atlas_index,
+                    atlas_next_slot,
+                    big_texture,
+                    big_texture_copy,
+                    texture_creator
+                } = if let Some(g) = sdl_grids.get_mut(key) {
+                    g
+                } else {
+                    sdl_grids.insert(*key, SDLGrid::new(&video_subsystem, font_width, font_height));
+                    sdl_grids.get_mut(key).unwrap()
+                };
+                for d in &grid.damages {
+                    if let Damage::Cell{ row, column, width, height } = d {
+                        let damage_top = *row;
+                        let mut damage_bottom = row + height;
+                        if damage_bottom > grid.get_height() {
+                            damage_bottom = grid.get_height();
                         }
-                        for current_column in damage_left .. damage_right {
-                            let char_id = grid.chars[current_row][current_column].or_else(||Some(0 as char)).unwrap() as u64;
-                            let attr_id = grid.colors[current_row][current_column];
-                            let atlas_key = ((attr_id & (2u64.pow(32) - 1)) << 32)
-                                | (char_id & (2u64.pow(32) - 1));
-                            if let None = atlas_index.get(&atlas_key) {
-                                let hl_attr = state.hl_attrs.get(&attr_id).unwrap();
-                                canvas.with_texture_canvas(&mut atlas_texture, |canvas| {
-                                    let bg = hl_attr.background.or_else(||default_bg).unwrap();
-                                    let fg = hl_attr.foreground.or_else(||default_fg).unwrap();
-                                    canvas.set_draw_color(bg);
+                        for current_row in damage_top .. damage_bottom {
+                            let damage_left = *column;
+                            let mut damage_right = column + width;
+                            if damage_right > grid.get_width() {
+                                damage_right = grid.get_width();
+                            }
+                            for current_column in damage_left .. damage_right {
+                                let char_id = grid.chars[current_row][current_column].or_else(||Some(0 as char)).unwrap() as u64;
+                                let attr_id = grid.colors[current_row][current_column];
+                                let atlas_key = ((attr_id & (2u64.pow(32) - 1)) << 32)
+                                    | (char_id & (2u64.pow(32) - 1));
+                                if let None = atlas_index.get(&atlas_key) {
+                                    let hl_attr = state.hl_attrs.get(&attr_id).unwrap();
+                                    canvas.with_texture_canvas(atlas, |canvas| {
+                                        let bg = hl_attr.background.or_else(||default_bg).unwrap();
+                                        let fg = hl_attr.foreground.or_else(||default_fg).unwrap();
+                                        canvas.set_draw_color(bg);
 
-                                    if let Some(char) = grid.chars[current_row][current_column] {
-                                        let surface = font
-                                            .render(&char.to_string())
-                                            .blended(fg)
-                                            .map_err(|e| e.to_string()).unwrap();
-                                        let texture = texture_creator
-                                            .create_texture_from_surface(&surface)
-                                            .map_err(|e| e.to_string()).unwrap();
-                                        let t = texture.query();
-                                        let cell_rect = Rect::new(
-                                            next_atlas_slot,
-                                            0,
-                                            t.width,
-                                            t.height,
-                                        );
-                                        canvas.fill_rect(cell_rect).unwrap();
-                                        canvas.copy(&texture, None, cell_rect).unwrap();
-                                        atlas_index.insert(atlas_key, (next_atlas_slot, t.width));
-                                        next_atlas_slot += t.width as i32;
-                                    } else {
-                                        let cell_rect = Rect::new(
-                                            next_atlas_slot,
-                                            0,
-                                            font_width,
-                                            font_height,
-                                        );
-                                        canvas.fill_rect(cell_rect).unwrap();
-                                        atlas_index.insert(atlas_key, (next_atlas_slot, font_width));
-                                        next_atlas_slot += font_width as i32;
-                                    }
+                                        if let Some(char) = grid.chars[current_row][current_column] {
+                                            let surface = font
+                                                .render(&char.to_string())
+                                                .blended(fg)
+                                                .map_err(|e| e.to_string()).unwrap();
+                                            let texture = texture_creator
+                                                .create_texture_from_surface(&surface)
+                                                .map_err(|e| e.to_string()).unwrap();
+                                            let t = texture.query();
+                                            let cell_rect = Rect::new(
+                                                *atlas_next_slot,
+                                                0,
+                                                t.width,
+                                                t.height,
+                                            );
+                                            canvas.fill_rect(cell_rect).unwrap();
+                                            canvas.copy(&texture, None, cell_rect).unwrap();
+                                            atlas_index.insert(atlas_key, (*atlas_next_slot, t.width));
+                                            *atlas_next_slot += t.width as i32;
+                                        } else {
+                                            let cell_rect = Rect::new(
+                                                *atlas_next_slot,
+                                                0,
+                                                font_width,
+                                                font_height,
+                                            );
+                                            canvas.fill_rect(cell_rect).unwrap();
+                                            atlas_index.insert(atlas_key, (*atlas_next_slot, font_width));
+                                            *atlas_next_slot += font_width as i32;
+                                        }
+                                    }).unwrap();
+                                }
+                                let (pos, width) = atlas_index.get(&atlas_key).unwrap();
+                                canvas.with_texture_canvas(big_texture, |canvas| {
+                                    let from = Rect::new(*pos, 0, *width, font_height);
+                                    let to = Rect::new(
+                                        (current_column as i32) * (font_width as i32),
+                                        (current_row as i32) * (font_height as i32),
+                                        *width,
+                                        font_height,
+                                    );
+                                    canvas.copy(&atlas, from, to).unwrap();
                                 }).unwrap();
                             }
-                            let (pos, width) = atlas_index.get(&atlas_key).unwrap();
-                            canvas.with_texture_canvas(&mut big_texture, |canvas| {
-                                let from = Rect::new(*pos, 0, *width, font_height);
-                                let to = Rect::new(
-                                    (current_column as i32) * (font_width as i32),
-                                    (current_row as i32) * (font_height as i32),
-                                    *width,
-                                    font_height,
-                                );
-                                canvas.copy(&atlas_texture, from, to).unwrap();
-                            }).unwrap();
                         }
+                    } else if let Damage::VerticalScroll{ from, to, height } = d {
+                        canvas.with_texture_canvas(big_texture_copy, |canvas| {
+                            canvas.copy(&big_texture, None, None).unwrap();
+                        }).unwrap();
+                        canvas.with_texture_canvas(big_texture, |canvas| {
+                            let f = Rect::new(
+                                0,
+                                (*from as i32) * (font_height as i32),
+                                window_rectangle.width(),
+                                (*height as u32) * (font_height as u32),
+                            );
+                            let t = Rect::new(
+                                0,
+                                (*to as i32) * (font_height as i32),
+                                window_rectangle.width(),
+                                (*height as u32) * (font_height as u32)
+                            );
+                            canvas.copy(&big_texture_copy, f, t).unwrap();
+                        }).unwrap();
                     }
-                } else if let Damage::VerticalScroll{ from, to, height } = d {
-                    canvas.with_texture_canvas(&mut big_texture_copy, |canvas| {
-                        canvas.copy(&big_texture, None, None).unwrap();
-                    }).unwrap();
-                    canvas.with_texture_canvas(&mut big_texture, |canvas| {
-                        let f = Rect::new(
-                            0,
-                            (*from as i32) * (font_height as i32),
-                            window_rectangle.width(),
-                            (*height as u32) * (font_height as u32),
-                        );
-                        let t = Rect::new(
-                            0,
-                            (*to as i32) * (font_height as i32),
-                            window_rectangle.width(),
-                            (*height as u32) * (font_height as u32)
-                        );
-                        canvas.copy(&big_texture_copy, f, t).unwrap();
-                    }).unwrap();
                 }
-            }
-            canvas.copy(&big_texture, window_rectangle, window_rectangle).unwrap();
+                canvas.copy(&big_texture, window_rectangle, window_rectangle).unwrap();
 
-            let (row, column) = grid.get_cursor_pos();
-            let attr_id = grid.colors[row as usize][column as usize];
-            if let Some(hl_attr) = state.hl_attrs.get(&attr_id) {
-                canvas.set_draw_color(hl_attr.foreground.or_else(||default_fg).unwrap());
-                cursor_rect.set_x((column as i32) * (font_width as i32));
-                cursor_rect.set_y((row as i32) * (font_height as i32));
-                cursor_rect.set_width(font_width);
-                cursor_rect.set_height(font_height);
-                canvas.fill_rect(cursor_rect).unwrap();
-            }
-            canvas.present();
-            if print_fps {
-                frame_count += 1;
-                if last_second.elapsed().as_secs() > 0 {
-                    println!("{} fps", frame_count);
-                    frame_count = 0;
-                    last_second = Instant::now();
+                let (row, column) = grid.get_cursor_pos();
+                let attr_id = grid.colors[row as usize][column as usize];
+                if let Some(hl_attr) = state.hl_attrs.get(&attr_id) {
+                    canvas.set_draw_color(hl_attr.foreground.or_else(||default_fg).unwrap());
+                    cursor_rect.set_x((column as i32) * (font_width as i32));
+                    cursor_rect.set_y((row as i32) * (font_height as i32));
+                    cursor_rect.set_width(font_width);
+                    cursor_rect.set_height(font_height);
+                    canvas.fill_rect(cursor_rect).unwrap();
                 }
+                canvas.present();
+                if print_fps {
+                    frame_count += 1;
+                    if last_second.elapsed().as_secs() > 0 {
+                        println!("{} fps", frame_count);
+                        frame_count = 0;
+                        last_second = Instant::now();
+                    }
+                }
+                grid.damages.truncate(0);
             }
-            grid.damages.truncate(0);
         }
 
         // Use the time we have left before having to display the next frame to read events from
