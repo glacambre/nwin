@@ -1,11 +1,14 @@
 mod keys;
 
+use swayipc::Connection;
+
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::collections::vec_deque::Drain;
 use std::env;
 use std::time::Instant;
 use std::convert::TryFrom;
+use std::convert::TryInto;
 
 extern crate sdl2;
 
@@ -27,6 +30,39 @@ type NvimColumn = usize;
 type NvimWidth = usize;
 type NvimHeight = usize;
 type NvimGridId = u64;
+type NvimWinId = u64;
+
+#[derive(Debug)]
+pub enum SplitDirection {
+    Above       = 0,
+    Below       = 1,
+    Left        = 2,
+    Right       = 3,
+    BelowRight  = 4,
+    AboveLeft   = 5,
+    TopLeft     = 6,
+    BottomRight = 7,
+    Previous    = 8,
+}
+
+impl TryFrom<u64> for SplitDirection {
+    type Error = ();
+
+    fn try_from(v: u64) -> Result<Self, Self::Error> {
+        match v {
+            x if x == SplitDirection::Above       as u64 => Ok(SplitDirection::Above),
+            x if x == SplitDirection::Below       as u64 => Ok(SplitDirection::Below),
+            x if x == SplitDirection::Left        as u64 => Ok(SplitDirection::Left),
+            x if x == SplitDirection::Right       as u64 => Ok(SplitDirection::Right),
+            x if x == SplitDirection::BelowRight  as u64 => Ok(SplitDirection::BelowRight),
+            x if x == SplitDirection::AboveLeft   as u64 => Ok(SplitDirection::AboveLeft),
+            x if x == SplitDirection::TopLeft     as u64 => Ok(SplitDirection::TopLeft),
+            x if x == SplitDirection::BottomRight as u64 => Ok(SplitDirection::BottomRight),
+            x if x == SplitDirection::Previous    as u64 => Ok(SplitDirection::Previous),
+            _ => Err(()),
+        }
+    }
+}
 
 enum Damage {
     Cell {
@@ -71,11 +107,13 @@ impl NvimGrid {
         }) as NvimWidth
     }
     pub fn get_cursor_pos(&self) -> (NvimRow, NvimColumn) {
-        match (self.cursor.0 < self.get_height(), self.cursor.1 < self.get_width()) {
+        let w = self.get_width();
+        let h = self.get_height();
+        match (self.cursor.0 < h, self.cursor.1 < w) {
             (true , true)  => (self.cursor.0, self.cursor.1),
             (true , false) => (self.cursor.0, self.get_width() - 1),
             (false, true)  => (self.get_height() - 1, self.cursor.1),
-            _ => (self.get_width() - 1, self.get_height() - 1),
+            _ => (if h > 0 { h - 1 } else { 0 }, if w > 0 { w - 1 } else { 0 }),
         }
     }
     pub fn set_cursor_pos(&mut self, row: NvimRow, column: NvimColumn) {
@@ -165,6 +203,7 @@ impl NvimState {
         grid.damages.push(Damage::Cell { row: old_pos.0, column: old_pos.1, width: 1, height: 1 });
     }
     pub fn grid_resize (&mut self, id: NvimGridId, width: NvimWidth, height: NvimHeight) {
+        println!("grid_resize {}", id);
         let grid = if let Some(g) = self.grids.get_mut(&id) {
             g
         } else {
@@ -283,9 +322,35 @@ impl NvimState {
             }
         }
     }
+    pub fn win_split (
+        &mut self,
+        sway: &mut Connection,
+        _win1: NvimWinId,
+        grid1: NvimGridId,
+        _win2: NvimWinId,
+        _grid2: NvimGridId,
+        flags: SplitDirection) {
+        let split = match flags {
+            SplitDirection::Above
+                | SplitDirection::Below => "splitv",
+            _ => "splith"
+        };
+        let title = format!("Nwin - Grid {}", grid1);
+        let node = sway.get_tree().unwrap().find(|n| {
+            if let Some(p) = &n.window_properties {
+                if let Some (str) = &p.title {
+                    return str == &title;
+                }
+            }
+            false
+        }).unwrap();
+        println!("{} for {}", split, title);
+        let command = format!("[con_id={}] {}", node.id, split);
+        sway.run_command(command).unwrap();
+    }
 }
 
-fn do_redraw(state: &mut NvimState, args: Drain<'_, Value>) {
+fn do_redraw(state: &mut NvimState, sway: &mut Connection, args: Drain<'_, Value>) {
     for update_events in args {
         if let Value::Array(update_events) = update_events {
             let mut update_events_iter = update_events.into_iter();
@@ -357,9 +422,29 @@ fn do_redraw(state: &mut NvimState, args: Drain<'_, Value>) {
                                     args.next().unwrap().as_map().unwrap()
                                 );
                             }
-                            "win_viewport" => {}, // Don't care about win_viewport, stop spamming about it!
+                            "win_split" => {
+                                let mut args = arr.unwrap().into_iter();
+                                state.win_split(
+                                    sway,
+                                    args.next().unwrap().as_u64().unwrap(),
+                                    args.next().unwrap().as_u64().unwrap(),
+                                    args.next().unwrap().as_u64().unwrap(),
+                                    args.next().unwrap().as_u64().unwrap(),
+                                    args.next().unwrap().as_u64().unwrap().try_into().unwrap(),
+                                );
+                            }
+                            "busy_start"
+                            | "busy_stop"
+                            | "flush"
+                            | "hl_group_set"
+                            | "mode_info_set"
+                            | "mode_change"
+                            | "mouse_off"
+                            | "option_set"
+                            | "win_pos"
+                            | "win_viewport" => {}, // Don't care about win_viewport, stop spamming about it!
                             _ => {
-                                // println!("Unhandled {}", str);
+                                println!("Unhandled {}", str);
                             }
                         }
                     }
@@ -383,12 +468,17 @@ struct SDLGrid {
     big_texture: Texture,
     big_texture_copy: Texture,
     texture_creator: TextureCreator<WindowContext>,
+    width: u32, // pixels
+    height: u32, // pixels
 }
 
 impl SDLGrid {
-    pub fn new (video_subsystem: &VideoSubsystem, font_width: u32, font_height: u32) -> SDLGrid {
+    pub fn new (video_subsystem: &VideoSubsystem, id: NvimGridId, font_width: u32, font_height: u32) -> SDLGrid {
+        let title = format!("Nwin - Grid {}", id);
+        let width = 800;
+        let height = 600;
         let window = video_subsystem
-            .window("Nwin", 800, 600)
+            .window(&title, width, height)
             .resizable()
             .build()
             .unwrap();
@@ -400,12 +490,12 @@ impl SDLGrid {
         let texture_creator = canvas.texture_creator();
         let big_texture = texture_creator.create_texture_target(
             None,
-            800,
-            600).unwrap();
+            width,
+            height).unwrap();
         let big_texture_copy = texture_creator.create_texture_target(
             None,
-            800,
-            600).unwrap();
+            width,
+            height).unwrap();
         let atlas = texture_creator.create_texture_target(
             None,
             256 * font_width,
@@ -418,12 +508,16 @@ impl SDLGrid {
             big_texture,
             big_texture_copy,
             texture_creator,
+            width,
+            height,
         }
     }
 }
 
 pub fn main() -> Result<(), String> {
     env::remove_var("NVIM_LISTEN_ADDRESS");
+
+    let mut sway = Connection::new().unwrap();
 
     let mut print_fps = false;
     for argument in env::args() {
@@ -453,7 +547,6 @@ pub fn main() -> Result<(), String> {
         .present_vsync()
         .build()
         .map_err(|e| e.to_string())?;
-    // canvas.present();
 
     {
         let window = canvas.window_mut();
@@ -486,7 +579,9 @@ pub fn main() -> Result<(), String> {
         (window_rectangle.height() / font_height).into(),
         UiAttachOptions::new()
         .set_rgb(true)
-        .set_linegrid_external(true)
+        .set_messages_external(true)
+        .set_multigrid(true)
+        .set_windows_external(true)
     ).unwrap();
 
     let mut event_pump = sdl_context.event_pump().map_err(|e| e.to_string())?;
@@ -522,7 +617,7 @@ pub fn main() -> Result<(), String> {
                     redraw_messages.push_back(msg);
                 }
                 if let Some(pos) = last_flush_position {
-                    do_redraw(&mut state, redraw_messages.drain(0..redraw_messages.len() - pos));
+                    do_redraw(&mut state, &mut sway, redraw_messages.drain(0..redraw_messages.len() - pos));
                 }
             } else {
                 eprintln!("Unexpected message: {}", str);
@@ -534,6 +629,10 @@ pub fn main() -> Result<(), String> {
             let default_bg = default_hl.background;
             let default_fg = default_hl.foreground;
             for (key, grid) in state.grids.iter_mut() {
+                if *key == 1 {
+                    grid.damages.truncate(0);
+                    continue;
+                }
                 let SDLGrid {
                     canvas,
                     atlas,
@@ -541,115 +640,162 @@ pub fn main() -> Result<(), String> {
                     atlas_next_slot,
                     big_texture,
                     big_texture_copy,
-                    texture_creator
+                    texture_creator,
+                    width,
+                    height,
                 } = if let Some(g) = sdl_grids.get_mut(key) {
                     g
                 } else {
-                    sdl_grids.insert(*key, SDLGrid::new(&video_subsystem, font_width, font_height));
+                    sdl_grids.insert(*key, SDLGrid::new(&video_subsystem, *key, font_width, font_height));
                     sdl_grids.get_mut(key).unwrap()
                 };
-                for d in &grid.damages {
-                    if let Damage::Cell{ row, column, width, height } = d {
-                        let damage_top = *row;
-                        let mut damage_bottom = row + height;
-                        if damage_bottom > grid.get_height() {
-                            damage_bottom = grid.get_height();
-                        }
-                        for current_row in damage_top .. damage_bottom {
-                            let damage_left = *column;
-                            let mut damage_right = column + width;
-                            if damage_right > grid.get_width() {
-                                damage_right = grid.get_width();
-                            }
-                            for current_column in damage_left .. damage_right {
-                                let char_id = grid.chars[current_row][current_column].or_else(||Some(0 as char)).unwrap() as u64;
-                                let attr_id = grid.colors[current_row][current_column];
-                                let atlas_key = ((attr_id & (2u64.pow(32) - 1)) << 32)
-                                    | (char_id & (2u64.pow(32) - 1));
-                                if let None = atlas_index.get(&atlas_key) {
-                                    let hl_attr = state.hl_attrs.get(&attr_id).unwrap();
-                                    canvas.with_texture_canvas(atlas, |canvas| {
-                                        let bg = hl_attr.background.or_else(||default_bg).unwrap();
-                                        let fg = hl_attr.foreground.or_else(||default_fg).unwrap();
-                                        canvas.set_draw_color(bg);
-
-                                        if let Some(char) = grid.chars[current_row][current_column] {
-                                            let surface = font
-                                                .render(&char.to_string())
-                                                .blended(fg)
-                                                .map_err(|e| e.to_string()).unwrap();
-                                            let texture = texture_creator
-                                                .create_texture_from_surface(&surface)
-                                                .map_err(|e| e.to_string()).unwrap();
-                                            let t = texture.query();
-                                            let cell_rect = Rect::new(
-                                                *atlas_next_slot,
-                                                0,
-                                                t.width,
-                                                t.height,
-                                            );
-                                            canvas.fill_rect(cell_rect).unwrap();
-                                            canvas.copy(&texture, None, cell_rect).unwrap();
-                                            atlas_index.insert(atlas_key, (*atlas_next_slot, t.width));
-                                            *atlas_next_slot += t.width as i32;
-                                        } else {
-                                            let cell_rect = Rect::new(
-                                                *atlas_next_slot,
-                                                0,
-                                                font_width,
-                                                font_height,
-                                            );
-                                            canvas.fill_rect(cell_rect).unwrap();
-                                            atlas_index.insert(atlas_key, (*atlas_next_slot, font_width));
-                                            *atlas_next_slot += font_width as i32;
-                                        }
-                                    }).unwrap();
-                                }
-                                let (pos, width) = atlas_index.get(&atlas_key).unwrap();
-                                canvas.with_texture_canvas(big_texture, |canvas| {
-                                    let from = Rect::new(*pos, 0, *width, font_height);
-                                    let to = Rect::new(
-                                        (current_column as i32) * (font_width as i32),
-                                        (current_row as i32) * (font_height as i32),
-                                        *width,
-                                        font_height,
-                                    );
-                                    canvas.copy(&atlas, from, to).unwrap();
-                                }).unwrap();
-                            }
-                        }
-                    } else if let Damage::VerticalScroll{ from, to, height } = d {
+                // Perform any resize
+                {
+                    let size = canvas.window().size();
+                    if size.0 != *width || size.1 != *height {
+                        // Let neovim know size changed
+                        nvim.ui_try_resize_grid(i64::try_from(*key).unwrap(),
+                            (size.0 / font_width).into(),
+                            (size.1 / font_height).into(),
+                        ).unwrap();
+                        // Resize sdl grid
+                        let min_width = std::cmp::min(size.0, *width);
+                        let min_height = std::cmp::min(size.1, *height);
+                        let r = Rect::new(0, 0, min_width, min_height);
+                        // back up big_texture to big_texture_copy
                         canvas.with_texture_canvas(big_texture_copy, |canvas| {
-                            canvas.copy(&big_texture, None, None).unwrap();
+                            canvas.copy(big_texture, r, r).unwrap();
                         }).unwrap();
+                        // deallocate big_texture
+                        // drop(big_texture);
+                        // allocate new big_texture
+                        *big_texture = texture_creator.create_texture_target(
+                            None,
+                            size.0,
+                            size.1,
+                        ).unwrap();
+                        // restore backup
                         canvas.with_texture_canvas(big_texture, |canvas| {
-                            let f = Rect::new(
-                                0,
-                                (*from as i32) * (font_height as i32),
-                                window_rectangle.width(),
-                                (*height as u32) * (font_height as u32),
-                            );
-                            let t = Rect::new(
-                                0,
-                                (*to as i32) * (font_height as i32),
-                                window_rectangle.width(),
-                                (*height as u32) * (font_height as u32)
-                            );
-                            canvas.copy(&big_texture_copy, f, t).unwrap();
+                            canvas.set_draw_color(default_bg.unwrap());
+                            canvas.clear();
+                            canvas.copy(big_texture_copy, r, r).unwrap();
                         }).unwrap();
+                        // destroy backup buffer
+                        // drop(big_texture_copy);
+                        // allocate new backup buffer
+                        *big_texture_copy = texture_creator.create_texture_target(
+                            None,
+                            size.0,
+                            size.1,
+                        ).unwrap();
+                        *width = size.0;
+                        *height = size.1;
                     }
                 }
-                canvas.copy(&big_texture, window_rectangle, window_rectangle).unwrap();
+                if grid.get_width() > 0 && grid.get_height() > 0 {
+                    for d in &grid.damages {
+                        if let Damage::Cell{ row, column, width, height } = d {
+                            let damage_top = *row;
+                            let mut damage_bottom = row + height;
+                            if damage_bottom > grid.get_height() {
+                                damage_bottom = grid.get_height();
+                            }
+                            for current_row in damage_top .. damage_bottom {
+                                let damage_left = *column;
+                                let mut damage_right = column + width;
+                                if damage_right > grid.get_width() {
+                                    damage_right = grid.get_width();
+                                }
+                                for current_column in damage_left .. damage_right {
+                                    let char_id = grid.chars[current_row][current_column].or_else(||Some(0 as char)).unwrap() as u64;
+                                    let attr_id = grid.colors[current_row][current_column];
+                                    let atlas_key = ((attr_id & (2u64.pow(32) - 1)) << 32)
+                                        | (char_id & (2u64.pow(32) - 1));
+                                    if let None = atlas_index.get(&atlas_key) {
+                                        let hl_attr = state.hl_attrs.get(&attr_id).unwrap();
+                                        canvas.with_texture_canvas(atlas, |canvas| {
+                                            let bg = hl_attr.background.or_else(||default_bg).unwrap();
+                                            let fg = hl_attr.foreground.or_else(||default_fg).unwrap();
+                                            canvas.set_draw_color(bg);
 
-                let (row, column) = grid.get_cursor_pos();
-                let attr_id = grid.colors[row as usize][column as usize];
-                if let Some(hl_attr) = state.hl_attrs.get(&attr_id) {
-                    canvas.set_draw_color(hl_attr.foreground.or_else(||default_fg).unwrap());
-                    cursor_rect.set_x((column as i32) * (font_width as i32));
-                    cursor_rect.set_y((row as i32) * (font_height as i32));
-                    cursor_rect.set_width(font_width);
-                    cursor_rect.set_height(font_height);
-                    canvas.fill_rect(cursor_rect).unwrap();
+                                            if let Some(char) = grid.chars[current_row][current_column] {
+                                                let surface = font
+                                                    .render(&char.to_string())
+                                                    .blended(fg)
+                                                    .map_err(|e| e.to_string()).unwrap();
+                                                let texture = texture_creator
+                                                    .create_texture_from_surface(&surface)
+                                                    .map_err(|e| e.to_string()).unwrap();
+                                                let t = texture.query();
+                                                let cell_rect = Rect::new(
+                                                    *atlas_next_slot,
+                                                    0,
+                                                    t.width,
+                                                    t.height,
+                                                );
+                                                canvas.fill_rect(cell_rect).unwrap();
+                                                canvas.copy(&texture, None, cell_rect).unwrap();
+                                                atlas_index.insert(atlas_key, (*atlas_next_slot, t.width));
+                                                *atlas_next_slot += t.width as i32;
+                                            } else {
+                                                let cell_rect = Rect::new(
+                                                    *atlas_next_slot,
+                                                    0,
+                                                    font_width,
+                                                    font_height,
+                                                );
+                                                canvas.fill_rect(cell_rect).unwrap();
+                                                atlas_index.insert(atlas_key, (*atlas_next_slot, font_width));
+                                                *atlas_next_slot += font_width as i32;
+                                            }
+                                        }).unwrap();
+                                    }
+                                    let (pos, width) = atlas_index.get(&atlas_key).unwrap();
+                                    canvas.with_texture_canvas(big_texture, |canvas| {
+                                        let from = Rect::new(*pos, 0, *width, font_height);
+                                        let to = Rect::new(
+                                            (current_column as i32) * (font_width as i32),
+                                            (current_row as i32) * (font_height as i32),
+                                            *width,
+                                            font_height,
+                                        );
+                                        canvas.copy(&atlas, from, to).unwrap();
+                                    }).unwrap();
+                                }
+                            }
+                        } else if let Damage::VerticalScroll{ from, to, height } = d {
+                            canvas.with_texture_canvas(big_texture_copy, |canvas| {
+                                canvas.copy(&big_texture, None, None).unwrap();
+                            }).unwrap();
+                            canvas.with_texture_canvas(big_texture, |canvas| {
+                                let f = Rect::new(
+                                    0,
+                                    (*from as i32) * (font_height as i32),
+                                    window_rectangle.width(),
+                                    (*height as u32) * (font_height as u32),
+                                );
+                                let t = Rect::new(
+                                    0,
+                                    (*to as i32) * (font_height as i32),
+                                    window_rectangle.width(),
+                                    (*height as u32) * (font_height as u32)
+                                );
+                                canvas.copy(&big_texture_copy, f, t).unwrap();
+                            }).unwrap();
+                        }
+                    }
+                    canvas.copy(&big_texture, window_rectangle, window_rectangle).unwrap();
+
+                    let (row, column) = grid.get_cursor_pos();
+                    let attr_id = grid.colors[row as usize][column as usize];
+                    if let Some(hl_attr) = state.hl_attrs.get(&attr_id) {
+                        canvas.set_draw_color(hl_attr.foreground.or_else(||default_fg).unwrap());
+                        cursor_rect.set_x((column as i32) * (font_width as i32));
+                        cursor_rect.set_y((row as i32) * (font_height as i32));
+                        cursor_rect.set_width(font_width);
+                        cursor_rect.set_height(font_height);
+                        canvas.fill_rect(cursor_rect).unwrap();
+                    }
                 }
                 canvas.present();
                 if print_fps {

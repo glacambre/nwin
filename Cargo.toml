@@ -8,6 +8,7 @@ edition = "2018"
 
 [dependencies]
 neovim-lib = { git = "https://github.com/glacambre/neovim-lib" }
+swayipc = { git = "https://github.com/glacambre/swayipc-rs" }
 
 [dependencies.sdl2]
 version = "0.34"
