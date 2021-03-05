@@ -203,7 +203,6 @@ impl NvimState {
         grid.damages.push(Damage::Cell { row: old_pos.0, column: old_pos.1, width: 1, height: 1 });
     }
     pub fn grid_resize (&mut self, id: NvimGridId, width: NvimWidth, height: NvimHeight) {
-        println!("grid_resize {}", id);
         let grid = if let Some(g) = self.grids.get_mut(&id) {
             g
         } else {
@@ -344,7 +343,6 @@ impl NvimState {
             }
             false
         }).unwrap();
-        println!("{} for {}", split, title);
         let command = format!("[con_id={}] {}", node.id, split);
         sway.run_command(command).unwrap();
     }
@@ -470,23 +468,28 @@ struct SDLGrid {
     texture_creator: TextureCreator<WindowContext>,
     width: u32, // pixels
     height: u32, // pixels
+    grid_x_offset: u32,
+    grid_y_offset: u32,
+    font_width: u32,
+    font_height: u32,
 }
 
 impl SDLGrid {
     pub fn new (video_subsystem: &VideoSubsystem, id: NvimGridId, font_width: u32, font_height: u32) -> SDLGrid {
         let title = format!("Nwin - Grid {}", id);
-        let width = 800;
-        let height = 600;
+        let width = 1;
+        let height = 1;
         let window = video_subsystem
             .window(&title, width, height)
             .resizable()
             .build()
             .unwrap();
-        let canvas = window
+        let mut canvas = window
             .into_canvas()
             .present_vsync()
             .build()
             .unwrap();
+        canvas.present();
         let texture_creator = canvas.texture_creator();
         let big_texture = texture_creator.create_texture_target(
             None,
@@ -510,6 +513,10 @@ impl SDLGrid {
             texture_creator,
             width,
             height,
+            grid_x_offset: 0,
+            grid_y_offset: 0,
+            font_width,
+            font_height,
         }
     }
 }
@@ -535,54 +542,70 @@ pub fn main() -> Result<(), String> {
     let video_subsystem = sdl_context.video()?;
     let ttf_context = sdl2::ttf::init().map_err(|e| e.to_string())?;
 
-    let mut window_rectangle = Rect::new(0, 0, 800, 600);
-    let window = video_subsystem
-        .window("Nwin", window_rectangle.width(), window_rectangle.height())
-        .resizable()
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    let mut canvas = window
-        .into_canvas()
-        .present_vsync()
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    {
-        let window = canvas.window_mut();
-        let size = window.size();
-        window_rectangle.set_width(size.0);
-        window_rectangle.set_height(size.1);
-    }
-
-    let texture_creator = canvas.texture_creator();
-
     let font = ttf_context.load_font(
         "/home/me/downloads/NotoSansMono/NotoSansMono-Regular.ttf",
         16
     )?;
+    let mut font_width = 1;
+    let mut font_height = 1;
 
-    let surface = font
-        .render("A")
-        .blended(Color::RGBA(255, 0, 0, 255))
-        .map_err(|e| e.to_string())?;
-    let texture = texture_creator
-        .create_texture_from_surface(&surface)
-        .map_err(|e| e.to_string())?;
+    let mut sdl_grids : HashMap<NvimGridId, SDLGrid> = HashMap::new();
 
-    let t = texture.query();
-    let font_width = t.width;
-    let font_height = t.height;
+    // We need to know the size of the first window in order to be able to attach the neovim GUI
+    // So we cheat and create an SDLGrid for grid id 2 which we know will be the first "buffer"
+    // grid id neovim creates
+    // We then use this SDLGrid to compute the different sizes we need and then attach
+    {
+        sdl_grids.insert(2, SDLGrid::new(&video_subsystem, 2, font_width, font_height));
+        let the_grid = sdl_grids.get_mut(&2).unwrap();
+        let surface = font
+            .render("A")
+            .blended(Color::RGBA(255, 0, 0, 255))
+            .map_err(|e| e.to_string())?;
+        let texture = the_grid
+            .texture_creator
+            .create_texture_from_surface(&surface)
+            .map_err(|e| e.to_string())?;
+        let t = texture.query();
+        font_width = t.width;
+        font_height = t.height;
+        the_grid.font_width = font_width;
+        the_grid.font_height = font_height;
 
-    nvim.ui_attach(
-        (window_rectangle.width() / font_width).into(),
-        (window_rectangle.height() / font_height).into(),
-        UiAttachOptions::new()
-        .set_rgb(true)
-        .set_messages_external(true)
-        .set_multigrid(true)
-        .set_windows_external(true)
-    ).unwrap();
+        let size = the_grid.canvas.window().size();
+        the_grid.width = size.0;
+        the_grid.height = size.0;
+
+        let row_count = the_grid.width / the_grid.font_width;
+        let col_count = the_grid.height / the_grid.font_height;
+        nvim.ui_attach(
+            80,
+            20,
+            UiAttachOptions::new()
+            .set_rgb(true)
+            .set_messages_external(true)
+            .set_multigrid(true)
+            .set_windows_external(true)
+        ).unwrap();
+
+        the_grid.grid_x_offset = (the_grid.width - (col_count * the_grid.font_width)) / 2;
+        the_grid.grid_y_offset = (the_grid.height - (row_count * the_grid.font_height)) / 2;
+
+        the_grid.big_texture = the_grid.texture_creator.create_texture_target(
+            None,
+            the_grid.width,
+            the_grid.height,
+        ).unwrap();
+        the_grid.big_texture_copy = the_grid.texture_creator.create_texture_target(
+            None,
+            the_grid.width,
+            the_grid.height,
+        ).unwrap();
+        the_grid.atlas = the_grid.texture_creator.create_texture_target(
+            None,
+            256 * the_grid.font_width,
+            the_grid.font_height).unwrap();
+    }
 
     let mut event_pump = sdl_context.event_pump().map_err(|e| e.to_string())?;
 
@@ -590,8 +613,6 @@ pub fn main() -> Result<(), String> {
     let mut redraw_messages = VecDeque::new();
     let mut last_second = Instant::now();
     let mut frame_count = 0;
-
-    let mut sdl_grids : HashMap<NvimGridId, SDLGrid> = HashMap::new();
 
     'running: loop {
         let now = Instant::now();
@@ -643,6 +664,10 @@ pub fn main() -> Result<(), String> {
                     texture_creator,
                     width,
                     height,
+                    grid_x_offset,
+                    grid_y_offset,
+                    font_width,
+                    font_height,
                 } = if let Some(g) = sdl_grids.get_mut(key) {
                     g
                 } else {
@@ -653,18 +678,31 @@ pub fn main() -> Result<(), String> {
                 {
                     let size = canvas.window().size();
                     if size.0 != *width || size.1 != *height {
-                        // Let neovim know size changed
-                        nvim.ui_try_resize_grid(i64::try_from(*key).unwrap(),
-                            (size.0 / font_width).into(),
-                            (size.1 / font_height).into(),
-                        ).unwrap();
+                        let col_count = size.0 / *font_width;
+                        let row_count = size.1 / *font_height;
+                        let pixel_grid_width = col_count * *font_width;
+                        let pixel_grid_height = row_count * *font_height;
+                        let new_x_offset = (size.0 - pixel_grid_width) / 2;
+                        let new_y_offset = (size.1 - pixel_grid_height) / 2;
+                        if (col_count as usize) != grid.get_width() || (row_count as usize) != grid.get_height() {
+                            // Let neovim know size changed
+                            nvim.ui_try_resize_grid(i64::try_from(*key).unwrap(),
+                                col_count.into(),
+                                row_count.into(),
+                            ).unwrap();
+                        }
                         // Resize sdl grid
                         let min_width = std::cmp::min(size.0, *width);
                         let min_height = std::cmp::min(size.1, *height);
-                        let r = Rect::new(0, 0, min_width, min_height);
                         // back up big_texture to big_texture_copy
+                        let backup_rectangle = Rect::new(0, 0, min_width, min_height);
                         canvas.with_texture_canvas(big_texture_copy, |canvas| {
-                            canvas.copy(big_texture, r, r).unwrap();
+                            let from = Rect::new(
+                                *grid_x_offset as i32,
+                                *grid_y_offset as i32,
+                                min_width,
+                                min_height);
+                            canvas.copy(big_texture, from, backup_rectangle).unwrap();
                         }).unwrap();
                         // deallocate big_texture
                         // drop(big_texture);
@@ -678,7 +716,8 @@ pub fn main() -> Result<(), String> {
                         canvas.with_texture_canvas(big_texture, |canvas| {
                             canvas.set_draw_color(default_bg.unwrap());
                             canvas.clear();
-                            canvas.copy(big_texture_copy, r, r).unwrap();
+                            let to = Rect::new(new_x_offset as i32, new_y_offset as i32, min_width, min_height);
+                            canvas.copy(big_texture_copy, backup_rectangle, to).unwrap();
                         }).unwrap();
                         // destroy backup buffer
                         // drop(big_texture_copy);
@@ -690,6 +729,8 @@ pub fn main() -> Result<(), String> {
                         ).unwrap();
                         *width = size.0;
                         *height = size.1;
+                        *grid_x_offset = new_x_offset;
+                        *grid_y_offset = new_y_offset;
                     }
                 }
                 if grid.get_width() > 0 && grid.get_height() > 0 {
@@ -741,23 +782,23 @@ pub fn main() -> Result<(), String> {
                                                 let cell_rect = Rect::new(
                                                     *atlas_next_slot,
                                                     0,
-                                                    font_width,
-                                                    font_height,
+                                                    *font_width,
+                                                    *font_height,
                                                 );
                                                 canvas.fill_rect(cell_rect).unwrap();
-                                                atlas_index.insert(atlas_key, (*atlas_next_slot, font_width));
-                                                *atlas_next_slot += font_width as i32;
+                                                atlas_index.insert(atlas_key, (*atlas_next_slot, *font_width));
+                                                *atlas_next_slot += *font_width as i32;
                                             }
                                         }).unwrap();
                                     }
                                     let (pos, width) = atlas_index.get(&atlas_key).unwrap();
                                     canvas.with_texture_canvas(big_texture, |canvas| {
-                                        let from = Rect::new(*pos, 0, *width, font_height);
+                                        let from = Rect::new(*pos, 0, *width, *font_height);
                                         let to = Rect::new(
-                                            (current_column as i32) * (font_width as i32),
-                                            (current_row as i32) * (font_height as i32),
+                                            (*grid_x_offset as i32) + (current_column as i32) * (*font_width as i32),
+                                            (*grid_y_offset as i32) + (current_row as i32) * (*font_height as i32),
                                             *width,
-                                            font_height,
+                                            *font_height,
                                         );
                                         canvas.copy(&atlas, from, to).unwrap();
                                     }).unwrap();
@@ -770,30 +811,31 @@ pub fn main() -> Result<(), String> {
                             canvas.with_texture_canvas(big_texture, |canvas| {
                                 let f = Rect::new(
                                     0,
-                                    (*from as i32) * (font_height as i32),
-                                    window_rectangle.width(),
-                                    (*height as u32) * (font_height as u32),
+                                    (*grid_y_offset as i32) + (*from as i32) * (*font_height as i32),
+                                    *width,
+                                    (*height as u32) * (*font_height as u32),
                                 );
                                 let t = Rect::new(
                                     0,
-                                    (*to as i32) * (font_height as i32),
-                                    window_rectangle.width(),
-                                    (*height as u32) * (font_height as u32)
+                                    (*grid_y_offset as i32) + (*to as i32) * (*font_height as i32),
+                                    *width,
+                                    (*height as u32) * (*font_height as u32)
                                 );
                                 canvas.copy(&big_texture_copy, f, t).unwrap();
                             }).unwrap();
                         }
                     }
-                    canvas.copy(&big_texture, window_rectangle, window_rectangle).unwrap();
+                    let r = Rect::new(0, 0, *width, *height);
+                    canvas.copy(&big_texture, r, r).unwrap();
 
                     let (row, column) = grid.get_cursor_pos();
                     let attr_id = grid.colors[row as usize][column as usize];
                     if let Some(hl_attr) = state.hl_attrs.get(&attr_id) {
                         canvas.set_draw_color(hl_attr.foreground.or_else(||default_fg).unwrap());
-                        cursor_rect.set_x((column as i32) * (font_width as i32));
-                        cursor_rect.set_y((row as i32) * (font_height as i32));
-                        cursor_rect.set_width(font_width);
-                        cursor_rect.set_height(font_height);
+                        cursor_rect.set_x((*grid_x_offset as i32) + (column as i32) * (*font_width as i32));
+                        cursor_rect.set_y((*grid_y_offset as i32) + (row as i32) * (*font_height as i32));
+                        cursor_rect.set_width(*font_width);
+                        cursor_rect.set_height(*font_height);
                         canvas.fill_rect(cursor_rect).unwrap();
                     }
                 }
