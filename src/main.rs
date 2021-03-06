@@ -1,6 +1,6 @@
 mod keys;
 
-use swayipc::Connection;
+use swayipc::{Connection, NodeLayout};
 
 use std::collections::HashMap;
 use std::collections::VecDeque;
@@ -329,22 +329,37 @@ impl NvimState {
         _win2: NvimWinId,
         _grid2: NvimGridId,
         flags: SplitDirection) {
-        let split = match flags {
+        let (split_command, desired_sway_layout) = match flags {
             SplitDirection::Above
-                | SplitDirection::Below => "splitv",
-            _ => "splith"
+                | SplitDirection::Below => ("splitv", NodeLayout::SplitV),
+            _ => ("splith", NodeLayout::SplitH)
         };
         let title = format!("Nwin - Grid {}", grid1);
-        let node = sway.get_tree().unwrap().find(|n| {
-            if let Some(p) = &n.window_properties {
-                if let Some (str) = &p.title {
-                    return str == &title;
+        // Find the parent node of the window being split
+        let parent_node = sway.get_tree().unwrap().find(|node| {
+            for n in &node.nodes {
+                if let Some(p) = &n.window_properties {
+                    if let Some (str) = &p.title {
+                        if str == &title {
+                            return true
+                        }
+                    }
                 }
             }
             false
         }).unwrap();
-        let command = format!("[con_id={}] {}", node.id, split);
-        sway.run_command(command).unwrap();
+        if parent_node.layout != desired_sway_layout {
+            let node = parent_node.find(|n| {
+                if let Some(p) = &n.window_properties {
+                    if let Some (str) = &p.title {
+                        return str == &title;
+                    }
+                }
+                false
+            }).unwrap();
+            let command = format!("[con_id={}] {}", node.id, split_command);
+            sway.run_command(command).unwrap();
+        }
     }
 }
 
