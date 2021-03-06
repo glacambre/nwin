@@ -2,6 +2,8 @@ mod keys;
 
 use swayipc::{Connection, NodeLayout};
 
+use std::process::Command;
+
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::collections::vec_deque::Drain;
@@ -541,14 +543,18 @@ pub fn main() -> Result<(), String> {
 
     let mut sway = Connection::new().unwrap();
 
+    let mut neovim_command = Command::new("nvim");
+    neovim_command.args(&["--embed", "--cmd", "let g:started_by_nwin = v:true"]);
     let mut print_fps = false;
-    for argument in env::args() {
+    for argument in env::args().skip(1) {
         if argument == "--print-fps" {
             print_fps = true;
+        } else {
+            neovim_command.arg(argument);
         }
     }
 
-    let session = Session::new_child().unwrap();
+    let session = Session::new_child_cmd(&mut neovim_command).unwrap();
     let mut nvim = Neovim::new(session);
     let mut state = NvimState::new();
     let chan = nvim.session.start_event_loop_channel();
