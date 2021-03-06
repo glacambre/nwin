@@ -14,7 +14,7 @@ use std::convert::TryInto;
 
 extern crate sdl2;
 
-use sdl2::event::Event;
+use sdl2::event::{Event, WindowEvent};
 use sdl2::pixels::Color;
 use sdl2::rect::Rect;
 use sdl2::video::Window;
@@ -165,6 +165,12 @@ impl NvimHighlightAttribute {
 pub struct NvimState {
     grids: HashMap<NvimGridId, NvimGrid>,
     hl_attrs: HashMap<u64, NvimHighlightAttribute>,
+    cursor_grid: NvimGridId,
+    cmdline_content: String,
+    cmdline_firstc: char,
+    cmdline_pos: u64,
+    cmdline_prompt: String,
+    cmdline_shown: bool,
 }
 
 impl NvimState {
@@ -172,7 +178,38 @@ impl NvimState {
         NvimState {
             grids: HashMap::new(),
             hl_attrs: HashMap::new(),
+            cursor_grid: 0,
+            cmdline_content: String::new(),
+            cmdline_firstc: ' ',
+            cmdline_pos: 0,
+            cmdline_prompt: String::new(),
+            cmdline_shown: false,
         }
+    }
+    pub fn cmdline_hide (&mut self) {
+        self.cmdline_shown = false;
+    }
+    pub fn cmdline_pos (&mut self, pos: u64, _level: u64) {
+        self.cmdline_pos = pos;
+    }
+    pub fn cmdline_show (&mut self,
+        content: &Vec<Value>,
+        pos: u64,
+        firstc: &str,
+        prompt: &str,
+        _indent: u64,
+        _level: u64) {
+        self.cmdline_content = content.into_iter().fold("".to_string(), |s, v| {
+            s + if let Some(a) = v.as_array() {
+                a[1].as_str().unwrap()
+            } else {
+                ""
+            }
+        });
+        self.cmdline_firstc = firstc.chars().next().unwrap();
+        self.cmdline_pos = pos;
+        self.cmdline_prompt = prompt.to_string();
+        self.cmdline_shown = true;
     }
     pub fn default_colors_set (&mut self, rgb_fg: Option<u64>, rgb_bg: Option<u64>, rgb_sp: Option<u64>) {
         let id = 0;
@@ -199,6 +236,7 @@ impl NvimState {
         }
     }
     pub fn grid_cursor_goto (&mut self, id: NvimGridId, row: NvimRow, column: NvimColumn) {
+        self.cursor_grid = id;
         let grid = self.grids.get_mut(&id).unwrap();
         let old_pos = grid.get_cursor_pos();
         grid.set_cursor_pos(row, column);
@@ -374,6 +412,27 @@ fn do_redraw(state: &mut NvimState, sway: &mut Connection, args: Drain<'_, Value
                     for events in update_events_iter {
                         let arr = events.as_array();
                         match str {
+                            "cmdline_hide" => {
+                                state.cmdline_hide();
+                            }
+                            "cmdline_pos" => {
+                                let mut args = arr.unwrap().into_iter();
+                                state.cmdline_pos(
+                                    args.next().unwrap().as_u64().unwrap(),
+                                    args.next().unwrap().as_u64().unwrap(),
+                                );
+                            }
+                            "cmdline_show" => {
+                                let mut args = arr.unwrap().into_iter();
+                                state.cmdline_show(
+                                    args.next().unwrap().as_array().unwrap(),
+                                    args.next().unwrap().as_u64().unwrap(),
+                                    args.next().unwrap().as_str().unwrap(),
+                                    args.next().unwrap().as_str().unwrap(),
+                                    args.next().unwrap().as_u64().unwrap(),
+                                    args.next().unwrap().as_u64().unwrap(),
+                                );
+                            }
                             "default_colors_set" => {
                                 let mut args = arr.unwrap().into_iter();
                                 state.default_colors_set(
@@ -457,7 +516,8 @@ fn do_redraw(state: &mut NvimState, sway: &mut Connection, args: Drain<'_, Value
                             | "mouse_off"
                             | "option_set"
                             | "win_pos"
-                            | "win_viewport" => {}, // Don't care about win_viewport, stop spamming about it!
+                            | "win_viewport"
+                            | "win_resize" => {}, // Don't care about win_viewport, stop spamming about it!
                             _ => {
                                 println!("Unhandled {}", str);
                             }
@@ -849,15 +909,33 @@ pub fn main() -> Result<(), String> {
                     let r = Rect::new(0, 0, *width, *height);
                     canvas.copy(&big_texture, r, r).unwrap();
 
-                    let (row, column) = grid.get_cursor_pos();
-                    let attr_id = grid.colors[row as usize][column as usize];
-                    if let Some(hl_attr) = state.hl_attrs.get(&attr_id) {
-                        canvas.set_draw_color(hl_attr.foreground.or_else(||default_fg).unwrap());
-                        cursor_rect.set_x((*grid_x_offset as i32) + (column as i32) * (*font_width as i32));
-                        cursor_rect.set_y((*grid_y_offset as i32) + (row as i32) * (*font_height as i32));
-                        cursor_rect.set_width(*font_width);
-                        cursor_rect.set_height(*font_height);
-                        canvas.fill_rect(cursor_rect).unwrap();
+                    if *key == state.cursor_grid {
+                        if state.cmdline_shown {
+                            canvas.set_draw_color(default_bg.unwrap());
+                            let cmdline_rect = Rect::new(0, 0, *width, *font_height);
+                            canvas.fill_rect(cmdline_rect).unwrap();
+                            let s = state.cmdline_firstc.to_string() + &state.cmdline_content;
+                            let msg = font
+                                .render(&s)
+                                .blended(default_fg.unwrap())
+                                .map_err(|e| e.to_string()).unwrap();
+                            let texture = texture_creator
+                                .create_texture_from_surface(&msg)
+                                .map_err(|e| e.to_string()).unwrap();
+                            let q = texture.query();
+                            canvas.copy(&texture, None, Rect::new(0,0,q.width, q.height)).unwrap();
+                        } else {
+                            let (row, column) = grid.get_cursor_pos();
+                            let attr_id = grid.colors[row as usize][column as usize];
+                            if let Some(hl_attr) = state.hl_attrs.get(&attr_id) {
+                                canvas.set_draw_color(hl_attr.foreground.or_else(||default_fg).unwrap());
+                                cursor_rect.set_x((*grid_x_offset as i32) + (column as i32) * (*font_width as i32));
+                                cursor_rect.set_y((*grid_y_offset as i32) + (row as i32) * (*font_height as i32));
+                                cursor_rect.set_width(*font_width);
+                                cursor_rect.set_height(*font_height);
+                                canvas.fill_rect(cursor_rect).unwrap();
+                            }
+                        }
                     }
                 }
                 canvas.present();
@@ -903,7 +981,7 @@ pub fn main() -> Result<(), String> {
                         }
                     }
                 }
-                _ => {},
+                _ => { println!("{:?}", event); },
             }
         }
         if input_string != "" {
