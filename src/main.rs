@@ -592,11 +592,10 @@ struct SDLGrid {
     grid_y_offset: u32,
     font_width: u32,
     font_height: u32,
-    window_id: NvimWinId,
 }
 
 impl SDLGrid {
-    pub fn new (video_subsystem: &VideoSubsystem, id: NvimGridId, window_id: NvimWinId, font_width: u32, font_height: u32) -> SDLGrid {
+    pub fn new (video_subsystem: &VideoSubsystem, id: NvimGridId, font_width: u32, font_height: u32) -> SDLGrid {
         let title = format!("Nwin - Grid {}", id);
         let width = 1;
         let height = 1;
@@ -638,7 +637,6 @@ impl SDLGrid {
             grid_y_offset: 0,
             font_width,
             font_height,
-            window_id,
         }
     }
 }
@@ -682,7 +680,7 @@ pub fn main() -> Result<(), String> {
     // grid id neovim creates
     // We then use this SDLGrid to compute the different sizes we need and then attach
     {
-        sdl_grids.insert(2, SDLGrid::new(&video_subsystem, 2, 0, font_width, font_height));
+        sdl_grids.insert(2, SDLGrid::new(&video_subsystem, 2, font_width, font_height));
         let the_grid = sdl_grids.get_mut(&2).unwrap();
 
         let surface = font
@@ -801,7 +799,7 @@ pub fn main() -> Result<(), String> {
                 } = if let Some(g) = sdl_grids.get_mut(key) {
                     g
                 } else {
-                    sdl_grids.insert(*key, SDLGrid::new(&video_subsystem, *key, grid.window_id, font_width, font_height));
+                    sdl_grids.insert(*key, SDLGrid::new(&video_subsystem, *key, font_width, font_height));
                     sdl_grids.get_mut(key).unwrap()
                 };
                 // Perform any resize
@@ -1040,10 +1038,22 @@ pub fn main() -> Result<(), String> {
                     // When a window closes down, Hidden and FocusLost are sent, but we've
                     // already gotten rid of the grid, so we won't be able to find it in sdl_grids.
                     // That's why we let Some(...) = instead of .unwrap()'ing.
-                    if let Some((_, grid)) = sdl_grids.iter_mut().find(|(_, v)| v.canvas.window().id() == window_id) {
+                    if let Some((key, _)) = sdl_grids.iter_mut().find(|(_, v)| v.canvas.window().id() == window_id) {
                         match win_event {
                             WindowEvent::Close => {
-                                nvim.call_function("nvim_win_close", vec![grid.window_id.into(), true.into()]).unwrap();
+                                let window_id = state.grids.get(key).unwrap().window_id;
+                                nvim.call_function("nvim_win_close", vec![window_id.into(), true.into()]).unwrap();
+                            }
+                            WindowEvent::FocusLost => {
+                                nvim.command("doautocmd FocusLost").unwrap();
+                            }
+                            WindowEvent::FocusGained => {
+                                nvim.command("doautocmd FocusGained").unwrap();
+                                // Can't unwrap because on app startup we'll have an os window but
+                                // no neovim window
+                                if let Some(grid) = state.grids.get(key) {
+                                    nvim.call_function("nvim_set_current_win", vec![grid.window_id.into()]).unwrap();
+                                }
                             }
                             _ => { println!("{:?}", win_event); }
                         }
