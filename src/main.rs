@@ -73,6 +73,7 @@ enum Damage {
         width: NvimWidth,
         height: NvimHeight,
     },
+    Destroy {},
     VerticalScroll {
         to: NvimRow,
         from: NvimRow,
@@ -85,6 +86,7 @@ pub struct NvimGrid {
     colors: Vec<Vec<u64>>,
     cursor: (NvimRow, NvimColumn),
     damages: Vec<Damage>, 
+    window_id: NvimWinId,
 }
 
 impl NvimGrid {
@@ -94,6 +96,7 @@ impl NvimGrid {
             colors: vec![vec![0; width]; height],
             cursor: (0, 0),
             damages: vec![],
+            window_id: 0,
         }
     }
     pub fn get_height(&self) -> NvimHeight {
@@ -235,6 +238,10 @@ impl NvimState {
             }
         }
     }
+    pub fn grid_destroy (&mut self, id: NvimGridId) {
+        let grid = self.grids.get_mut(&id).unwrap();
+        grid.damages.push(Damage::Destroy {});
+    }
     pub fn grid_cursor_goto (&mut self, id: NvimGridId, row: NvimRow, column: NvimColumn) {
         self.cursor_grid = id;
         let grid = self.grids.get_mut(&id).unwrap();
@@ -361,6 +368,17 @@ impl NvimState {
             }
         }
     }
+    pub fn win_pos (
+        &mut self,
+        grid: NvimGridId,
+        win: NvimWinId,
+        _start_row: NvimRow,
+        _start_col: NvimHeight,
+        _width: NvimWidth,
+        _height: NvimHeight) {
+        let grid = self.grids.get_mut(&grid).unwrap();
+        grid.window_id = win;
+    }
     pub fn win_split (
         &mut self,
         sway: &mut Connection,
@@ -447,6 +465,12 @@ fn do_redraw(state: &mut NvimState, sway: &mut Connection, args: Drain<'_, Value
                                     args.next().unwrap().as_u64().unwrap() as NvimGridId,
                                 );
                             }
+                            "grid_destroy" => {
+                                let mut args = arr.unwrap().into_iter();
+                                state.grid_destroy(
+                                    args.next().unwrap().as_u64().unwrap() as NvimGridId,
+                                );
+                            }
                             "grid_cursor_goto" => {
                                 let mut args = arr.unwrap().into_iter();
                                 state.grid_cursor_goto(
@@ -496,6 +520,26 @@ fn do_redraw(state: &mut NvimState, sway: &mut Connection, args: Drain<'_, Value
                                     args.next().unwrap().as_map().unwrap()
                                 );
                             }
+                            "win_pos" => {
+                                let mut args = arr.unwrap().into_iter();
+                                let grid_id = args.next().unwrap().as_u64().unwrap() as NvimGridId;
+                                // neovim-lib doesn't unpack ext types so we end up having to do it
+                                // ourselves. Pretty stupid...
+                                // https://github.com/msgpack/msgpack/blob/master/spec.md#extension-types
+                                // https://github.com/msgpack/msgpack/blob/master/spec.md#int-format-family
+                                let (t, values) = args.next().unwrap().as_ext().unwrap();
+                                // 1 is the id for the window type, 0xCD means 16bit integer
+                                assert!(t == 1 && values[0] == 0xCD && values.len() == 3);
+                                let win_id = (values[1] as NvimWinId) << 8 | (values[2] as NvimWinId);
+                                state.win_pos(
+                                    grid_id,
+                                    win_id as NvimWinId,
+                                    args.next().unwrap().as_u64().unwrap() as NvimRow,
+                                    args.next().unwrap().as_u64().unwrap() as NvimColumn,
+                                    args.next().unwrap().as_u64().unwrap() as NvimWidth,
+                                    args.next().unwrap().as_u64().unwrap() as NvimHeight,
+                                );
+                            }
                             "win_split" => {
                                 let mut args = arr.unwrap().into_iter();
                                 state.win_split(
@@ -515,7 +559,6 @@ fn do_redraw(state: &mut NvimState, sway: &mut Connection, args: Drain<'_, Value
                             | "mode_change"
                             | "mouse_off"
                             | "option_set"
-                            | "win_pos"
                             | "win_viewport"
                             | "win_resize" => {}, // Don't care about win_viewport, stop spamming about it!
                             _ => {
@@ -549,10 +592,11 @@ struct SDLGrid {
     grid_y_offset: u32,
     font_width: u32,
     font_height: u32,
+    window_id: NvimWinId,
 }
 
 impl SDLGrid {
-    pub fn new (video_subsystem: &VideoSubsystem, id: NvimGridId, font_width: u32, font_height: u32) -> SDLGrid {
+    pub fn new (video_subsystem: &VideoSubsystem, id: NvimGridId, window_id: NvimWinId, font_width: u32, font_height: u32) -> SDLGrid {
         let title = format!("Nwin - Grid {}", id);
         let width = 1;
         let height = 1;
@@ -594,6 +638,7 @@ impl SDLGrid {
             grid_y_offset: 0,
             font_width,
             font_height,
+            window_id,
         }
     }
 }
@@ -637,8 +682,9 @@ pub fn main() -> Result<(), String> {
     // grid id neovim creates
     // We then use this SDLGrid to compute the different sizes we need and then attach
     {
-        sdl_grids.insert(2, SDLGrid::new(&video_subsystem, 2, font_width, font_height));
+        sdl_grids.insert(2, SDLGrid::new(&video_subsystem, 2, 0, font_width, font_height));
         let the_grid = sdl_grids.get_mut(&2).unwrap();
+
         let surface = font
             .render("A")
             .blended(Color::RGBA(255, 0, 0, 255))
@@ -694,8 +740,10 @@ pub fn main() -> Result<(), String> {
     let mut redraw_messages = VecDeque::new();
     let mut last_second = Instant::now();
     let mut frame_count = 0;
+    let mut grids_to_destroy = vec![];
 
     'running: loop {
+        grids_to_destroy.truncate(0);
         let now = Instant::now();
         // 1) Process events from neovim
         while let Ok((str, messages)) = chan.try_recv() {
@@ -749,10 +797,11 @@ pub fn main() -> Result<(), String> {
                     grid_y_offset,
                     font_width,
                     font_height,
+                    ..
                 } = if let Some(g) = sdl_grids.get_mut(key) {
                     g
                 } else {
-                    sdl_grids.insert(*key, SDLGrid::new(&video_subsystem, *key, font_width, font_height));
+                    sdl_grids.insert(*key, SDLGrid::new(&video_subsystem, *key, grid.window_id, font_width, font_height));
                     sdl_grids.get_mut(key).unwrap()
                 };
                 // Perform any resize
@@ -904,6 +953,8 @@ pub fn main() -> Result<(), String> {
                                 );
                                 canvas.copy(&big_texture_copy, f, t).unwrap();
                             }).unwrap();
+                        } else if let Damage::Destroy {} = d {
+                            grids_to_destroy.push(*key);
                         }
                     }
                     let r = Rect::new(0, 0, *width, *height);
@@ -949,6 +1000,10 @@ pub fn main() -> Result<(), String> {
                 }
                 grid.damages.truncate(0);
             }
+            for key in &grids_to_destroy {
+                sdl_grids.remove(&key);
+                state.grids.remove(&key);
+            }
         }
 
         // Use the time we have left before having to display the next frame to read events from
@@ -981,6 +1036,20 @@ pub fn main() -> Result<(), String> {
                         }
                     }
                 }
+                Event::Window { window_id, win_event, .. } => {
+                    // When a window closes down, Hidden and FocusLost are sent, but we've
+                    // already gotten rid of the grid, so we won't be able to find it in sdl_grids.
+                    // That's why we let Some(...) = instead of .unwrap()'ing.
+                    if let Some((_, grid)) = sdl_grids.iter_mut().find(|(_, v)| v.canvas.window().id() == window_id) {
+                        match win_event {
+                            WindowEvent::Close => {
+                                nvim.call_function("nvim_win_close", vec![grid.window_id.into(), true.into()]).unwrap();
+                            }
+                            _ => { println!("{:?}", win_event); }
+                        }
+                    }
+                }
+                Event::KeyUp { .. } => {},
                 _ => { println!("{:?}", event); },
             }
         }
