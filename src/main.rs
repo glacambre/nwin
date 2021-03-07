@@ -1055,12 +1055,11 @@ pub fn main() -> Result<(), String> {
                                     nvim.call_function("nvim_set_current_win", vec![grid.window_id.into()]).unwrap();
                                 }
                             }
-                            _ => { println!("{:?}", win_event); }
+                            _ => {}
                         }
                     }
                 }
-                Event::KeyUp { .. } => {},
-                _ => { println!("{:?}", event); },
+                _ => {},
             }
         }
         if input_string != "" {
