@@ -1,6 +1,6 @@
 # Nwin
 
-This is an experimental Neovim UI that creates a new OS window for each Neovim window. This enables performing window management using i3/sway's regular window-management features.
+This is an experimental Neovim UI that creates a new OS window for each Neovim window, all backed by the same neovim server. This enables performing window management using i3/sway's regular window-management features.
 
 ## Why use this
 
