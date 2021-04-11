@@ -368,6 +368,36 @@ impl NvimState {
             }
         }
     }
+    pub fn win_hide (&mut self, sway: &mut Connection, win: NvimWinId) {
+        println!("hiding {}", win);
+        let title = format!("Nwin - Grid {}", win);
+        // Find the parent node of the window being split
+        let parent_node = sway.get_tree().unwrap().find(|node| {
+            for n in &node.nodes {
+                if let Some(p) = &n.window_properties {
+                    if let Some (str) = &p.title {
+                        if str == &title {
+                            return true
+                        }
+                    }
+                }
+            }
+            false
+        }).unwrap();
+        println!("{:?}", parent_node);
+        if parent_node.layout != NodeLayout::Tabbed {
+            let node = parent_node.find(|n| {
+                if let Some(p) = &n.window_properties {
+                    if let Some (str) = &p.title {
+                        return str == &title;
+                    }
+                }
+                false
+            }).unwrap();
+            sway.run_command(format!("[con_id={}] splitv", node.id)).unwrap();
+            sway.run_command(format!("[con_id={}] layout tabbed", node.id)).unwrap();
+        }
+    }
     pub fn win_pos (
         &mut self,
         grid: NvimGridId,
@@ -520,6 +550,13 @@ fn do_redraw(state: &mut NvimState, sway: &mut Connection, args: Drain<'_, Value
                                     args.next().unwrap().as_map().unwrap()
                                 );
                             }
+                            "win_hide" => {
+                                let mut args = arr.unwrap().into_iter();
+                                state.win_hide(
+                                    sway,
+                                    args.next().unwrap().as_u64().unwrap() as NvimWinId,
+                                );
+                            }
                             "win_pos" => {
                                 let mut args = arr.unwrap().into_iter();
                                 let grid_id = args.next().unwrap().as_u64().unwrap() as NvimGridId;
@@ -562,7 +599,7 @@ fn do_redraw(state: &mut NvimState, sway: &mut Connection, args: Drain<'_, Value
                             | "win_viewport"
                             | "win_resize" => {}, // Don't care about win_viewport, stop spamming about it!
                             _ => {
-                                println!("Unhandled {}", str);
+                                println!("Unhandled {}, {:?}", str, events);
                             }
                         }
                     }
@@ -814,10 +851,12 @@ pub fn main() -> Result<(), String> {
                         let new_y_offset = (size.1 - pixel_grid_height) / 2;
                         if (col_count as usize) != grid.get_width() || (row_count as usize) != grid.get_height() {
                             // Let neovim know size changed
-                            nvim.ui_try_resize_grid(i64::try_from(*key).unwrap(),
+                            if let Err(e) = nvim.ui_try_resize_grid(i64::try_from(*key).unwrap(),
                                 col_count.into(),
                                 row_count.into(),
-                            ).unwrap();
+                            ) {
+                                eprintln!("{}", e);
+                            }
                         }
                         // Resize sdl grid
                         let min_width = std::cmp::min(size.0, *width);
