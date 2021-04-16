@@ -631,6 +631,15 @@ struct SDLGrid {
     font_height: u32,
 }
 
+fn find_sdl_gl_driver() -> Option<u32> {
+    for (index, item) in sdl2::render::drivers().enumerate() {
+        if item.name == "opengl" {
+            return Some(index as u32);
+        }
+    }
+    None
+}
+
 impl SDLGrid {
     pub fn new (video_subsystem: &VideoSubsystem, id: NvimGridId, font_width: u32, font_height: u32) -> SDLGrid {
         let title = format!("Nwin - Grid {}", id);
@@ -638,15 +647,15 @@ impl SDLGrid {
         let height = 1;
         let window = video_subsystem
             .window(&title, width, height)
+            .opengl()
             .resizable()
             .build()
             .unwrap();
-        let mut canvas = window
+        let canvas = window
             .into_canvas()
-            .present_vsync()
+            .index(find_sdl_gl_driver().unwrap())
             .build()
             .unwrap();
-        canvas.present();
         let texture_creator = canvas.texture_creator();
         let big_texture = texture_creator.create_texture_target(
             None,
@@ -1108,4 +1117,3 @@ pub fn main() -> Result<(), String> {
 
     Ok(())
 }
-
