@@ -310,7 +310,7 @@ impl NvimState {
         }
         grid.damages.push(Damage::Cell { row, column: col_start, width: damage_length, height: 1 });
     }
-    pub fn grid_scroll (&mut self, id: NvimGridId, top: NvimRow, bot: NvimRow, _left: NvimColumn, _right: NvimColumn, rows: i64, _cols: i64) {
+    pub fn grid_scroll (&mut self, id: NvimGridId, top: NvimRow, bot: NvimRow, left: NvimColumn, right: NvimColumn, rows: i64, _cols: i64) {
         assert!(_cols == 0);
         let grid = self.grids.get_mut(&id).unwrap();
         if rows > 0 {
@@ -322,7 +322,7 @@ impl NvimState {
                 bot
             };
             for y in top .. bottom {
-                for x in 0 .. grid.get_width() {
+                for x in left .. right {
                     grid.chars[y][x] = grid.chars[y + r][x];
                     grid.colors[y][x] = grid.colors[y + r][x];
                 }
@@ -332,7 +332,7 @@ impl NvimState {
             // Moving characters down
             let mut y = bot - 1;
             while y >= top && ((y as i64) + rows) >= 0 {
-                for x in 0 .. grid.get_width() {
+                for x in left .. right {
                     grid.chars[y][x] = grid.chars[((y as i64) + rows) as usize][x];
                     grid.colors[y][x] = grid.colors[((y as i64) + rows) as usize][x];
                 }
