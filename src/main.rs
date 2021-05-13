@@ -174,6 +174,7 @@ pub struct NvimState {
     cmdline_pos: u64,
     cmdline_prompt: String,
     cmdline_shown: bool,
+    cursor_on: bool,
 }
 
 impl NvimState {
@@ -187,6 +188,7 @@ impl NvimState {
             cmdline_pos: 0,
             cmdline_prompt: String::new(),
             cmdline_shown: false,
+            cursor_on: true,
         }
     }
     pub fn cmdline_hide (&mut self) {
@@ -460,6 +462,12 @@ fn do_redraw(state: &mut NvimState, sway: &mut Connection, args: Drain<'_, Value
                     for events in update_events_iter {
                         let arr = events.as_array();
                         match str {
+                            "busy_start" => {
+                                state.cursor_on = false;
+                            }
+                            "busy_stop" => {
+                                state.cursor_on = true;
+                            }
                             "cmdline_hide" => {
                                 state.cmdline_hide();
                             }
@@ -588,16 +596,13 @@ fn do_redraw(state: &mut NvimState, sway: &mut Connection, args: Drain<'_, Value
                                     args.next().unwrap().as_u64().unwrap().try_into().unwrap(),
                                 );
                             }
-                            "busy_start"
-                            | "busy_stop"
-                            | "flush"
+                            "flush"
                             | "hl_group_set"
                             | "mode_info_set"
                             | "mode_change"
                             | "mouse_off"
                             | "option_set"
-                            | "win_viewport"
-                            | "win_resize" => {}, // Don't care about win_viewport, stop spamming about it!
+                            | "win_viewport" => {}
                             _ => {
                                 println!("Unhandled {}, {:?}", str, events);
                             }
@@ -1021,7 +1026,7 @@ pub fn main() -> Result<(), String> {
                                 .map_err(|e| e.to_string()).unwrap();
                             let q = texture.query();
                             canvas.copy(&texture, None, Rect::new(0,0,q.width, q.height)).unwrap();
-                        } else {
+                        } else if state.cursor_on {
                             let (row, column) = grid.get_cursor_pos();
                             let attr_id = grid.colors[row as usize][column as usize];
                             if let Some(hl_attr) = state.hl_attrs.get(&attr_id) {
