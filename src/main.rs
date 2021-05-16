@@ -936,8 +936,13 @@ pub fn main() -> Result<(), String> {
                                     if let None = atlas_index.get(&atlas_key) {
                                         let hl_attr = state.hl_attrs.get(&attr_id).unwrap();
                                         canvas.with_texture_canvas(atlas, |canvas| {
-                                            let bg = hl_attr.background.or_else(||default_bg).unwrap();
-                                            let fg = hl_attr.foreground.or_else(||default_fg).unwrap();
+                                            let mut bg = hl_attr.background.or_else(||default_bg).unwrap();
+                                            let mut fg = hl_attr.foreground.or_else(||default_fg).unwrap();
+                                            if hl_attr.reverse {
+                                                let tmp = bg;
+                                                bg = fg;
+                                                fg = tmp;
+                                            }
                                             canvas.set_draw_color(bg);
 
                                             if let Some(char) = grid.chars[current_row][current_column] {
