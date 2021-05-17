@@ -700,9 +700,12 @@ pub fn main() -> Result<(), String> {
     let mut neovim_command = Command::new("nvim");
     neovim_command.args(&["--embed", "--cmd", "let g:started_by_nwin = v:true"]);
     let mut print_fps = false;
+    let mut max_fps = 60;
     for argument in env::args().skip(1) {
         if argument == "--print-fps" {
             print_fps = true;
+        } else if argument.starts_with("--max-fps=") {
+            max_fps = argument.get(10..).unwrap().parse::<i64>().unwrap();
         } else {
             neovim_command.arg(argument);
         }
@@ -822,6 +825,7 @@ pub fn main() -> Result<(), String> {
                 eprintln!("Unexpected message: {}", str);
             }
         }
+
 
         // 3) Redraw grid damages
         if let Some(default_hl) = state.hl_attrs.get(&0) {
@@ -1064,64 +1068,64 @@ pub fn main() -> Result<(), String> {
 
         // Use the time we have left before having to display the next frame to read events from
         // ui and forward them to neovim if necessary.
-        let mut time_left = (1000/60) - i64::try_from(now.elapsed().as_millis()).unwrap() - 1;
-        if time_left < 1 {
-            time_left = 0
-        }
-        let mut input_string = "".to_owned();
-        for event in event_pump.wait_timeout_iter(time_left as u32) {
-            match event {
-                Event::Quit { .. } => { nvim.quit_no_save().unwrap(); break 'running; },
-                Event::KeyDown { .. } => {
-                    if let Some(str) = keys::nvim_event_representation(event) {
-                        input_string.push_str(&str);
-                    }
-                },
-                Event::TextInput { text: s, .. } => {
-                    for c in s.chars() {
-                        // NOTE: We ignore space because it has a non-literal repr and it's better
-                        // to have it go through the keydown nvim.input, in order to be able to
-                        // handle both <Space> and <S-Space> (we can't tell <S-Space> from a
-                        // TextInput event).
-                        if c != ' ' {
-                            if let Some(s) = keys::nvim_char_representation(c) {
-                                input_string.push_str(s);
-                            } else {
-                                input_string.push_str(&c.to_string());
-                            }
+        let mut time_left = (1000/max_fps) - i64::try_from(now.elapsed().as_millis()).unwrap();
+        while time_left > 1 {
+            let mut input_string = "".to_owned();
+            if let Some(event) = event_pump.wait_event_timeout(time_left as u32) {
+                match event {
+                    Event::Quit { .. } => { nvim.quit_no_save().unwrap(); break 'running; },
+                    Event::KeyDown { .. } => {
+                        if let Some(str) = keys::nvim_event_representation(event) {
+                            input_string.push_str(&str);
                         }
-                    }
-                }
-                Event::Window { window_id, win_event, .. } => {
-                    // When a window closes down, Hidden and FocusLost are sent, but we've
-                    // already gotten rid of the grid, so we won't be able to find it in sdl_grids.
-                    // That's why we let Some(...) = instead of .unwrap()'ing.
-                    if let Some((key, _)) = sdl_grids.iter_mut().find(|(_, v)| v.canvas.window().id() == window_id) {
-                        match win_event {
-                            WindowEvent::Close => {
-                                let window_id = state.grids.get(key).unwrap().window_id;
-                                nvim.call_function("nvim_win_close", vec![window_id.into(), true.into()]).unwrap();
-                            }
-                            WindowEvent::FocusLost => {
-                                nvim.command("doautocmd FocusLost").unwrap();
-                            }
-                            WindowEvent::FocusGained => {
-                                nvim.command("doautocmd FocusGained").unwrap();
-                                // Can't unwrap because on app startup we'll have an os window but
-                                // no neovim window
-                                if let Some(grid) = state.grids.get(key) {
-                                    nvim.call_function("nvim_set_current_win", vec![grid.window_id.into()]).unwrap();
+                    },
+                    Event::TextInput { text: s, .. } => {
+                        for c in s.chars() {
+                            // NOTE: We ignore space because it has a non-literal repr and it's better
+                            // to have it go through the keydown nvim.input, in order to be able to
+                            // handle both <Space> and <S-Space> (we can't tell <S-Space> from a
+                            // TextInput event).
+                            if c != ' ' {
+                                if let Some(s) = keys::nvim_char_representation(c) {
+                                    input_string.push_str(s);
+                                } else {
+                                    input_string.push_str(&c.to_string());
                                 }
                             }
-                            _ => {}
                         }
                     }
+                    Event::Window { window_id, win_event, .. } => {
+                        // When a window closes down, Hidden and FocusLost are sent, but we've
+                        // already gotten rid of the grid, so we won't be able to find it in sdl_grids.
+                        // That's why we let Some(...) = instead of .unwrap()'ing.
+                        if let Some((key, _)) = sdl_grids.iter_mut().find(|(_, v)| v.canvas.window().id() == window_id) {
+                            match win_event {
+                                WindowEvent::Close => {
+                                    let window_id = state.grids.get(key).unwrap().window_id;
+                                    nvim.call_function("nvim_win_close", vec![window_id.into(), true.into()]).unwrap();
+                                }
+                                WindowEvent::FocusLost => {
+                                    nvim.command("doautocmd FocusLost").unwrap();
+                                }
+                                WindowEvent::FocusGained => {
+                                    nvim.command("doautocmd FocusGained").unwrap();
+                                    // Can't unwrap because on app startup we'll have an os window but
+                                    // no neovim window
+                                    if let Some(grid) = state.grids.get(key) {
+                                        nvim.call_function("nvim_set_current_win", vec![grid.window_id.into()]).unwrap();
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    _ => {},
                 }
-                _ => {},
             }
-        }
-        if input_string != "" {
-            nvim.input(&input_string).unwrap();
+            if input_string != "" {
+                nvim.input(&input_string).unwrap();
+            }
+            time_left = (1000/max_fps) - i64::try_from(now.elapsed().as_millis()).unwrap();
         }
     }
 
