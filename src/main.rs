@@ -175,6 +175,8 @@ pub struct NvimState {
     cmdline_prompt: String,
     cmdline_shown: bool,
     cursor_on: bool,
+    message_attrs: Vec<u64>,
+    message_contents: Vec<String>,
 }
 
 impl NvimState {
@@ -189,6 +191,8 @@ impl NvimState {
             cmdline_prompt: String::new(),
             cmdline_shown: false,
             cursor_on: true,
+            message_attrs: vec![],
+            message_contents: vec![],
         }
     }
     pub fn cmdline_hide (&mut self) {
@@ -368,6 +372,22 @@ impl NvimState {
                 "undercurl" => { attr.undercurl = v.as_bool().unwrap(); }
                 _ => { println!("Unsupported hl attr key {} in {:?}", key, map); }
             }
+        }
+    }
+    pub fn msg_clear (&mut self) {
+        self.message_attrs.truncate(0);
+        self.message_contents.truncate(0);
+    }
+    pub fn msg_show (
+        &mut self,
+        _kind: &str,
+        content: &Vec<Value>,
+        _replace_last: bool
+        ) {
+        for c in content {
+            let mut args = c.as_array().unwrap().into_iter();
+            self.message_attrs.push(args.next().unwrap().as_u64().unwrap());
+            self.message_contents.push(args.next().unwrap().as_str().unwrap().to_string());
         }
     }
     pub fn win_hide (&mut self, sway: &mut Connection, win: NvimWinId) {
@@ -558,6 +578,17 @@ fn do_redraw(state: &mut NvimState, sway: &mut Connection, args: Drain<'_, Value
                                     args.next().unwrap().as_map().unwrap()
                                 );
                             }
+                            "msg_clear" => {
+                                state.msg_clear();
+                            }
+                            "msg_show" => {
+                                let mut args = arr.unwrap().into_iter();
+                                state.msg_show(
+                                    args.next().unwrap().as_str().unwrap(),
+                                    args.next().unwrap().as_array().unwrap(),
+                                    args.next().unwrap().as_bool().unwrap(),
+                                )
+                            }
                             "win_hide" => {
                                 let mut args = arr.unwrap().into_iter();
                                 state.win_hide(
@@ -602,7 +633,10 @@ fn do_redraw(state: &mut NvimState, sway: &mut Connection, args: Drain<'_, Value
                             | "mode_change"
                             | "mouse_off"
                             | "option_set"
-                            | "win_viewport" => {}
+                            | "win_viewport"
+                            | "msg_showcmd"
+                            | "msg_showmode"
+                            => {}
                             _ => {
                                 println!("Unhandled {}, {:?}", str, events);
                             }
@@ -1045,6 +1079,21 @@ pub fn main() -> Result<(), String> {
                                 cursor_rect.set_width(*font_width);
                                 cursor_rect.set_height(*font_height);
                                 canvas.fill_rect(cursor_rect).unwrap();
+                            }
+                        }
+                        for i in 0 .. state.message_contents.len() {
+                            if let Some(attr) = state.hl_attrs.get(&state.message_attrs[i]) {
+                                let s = &state.message_contents[i];
+                                let msg = font
+                                    .render(&s)
+                                    .shaded(attr.foreground.or_else(||default_fg).unwrap(),
+                                            attr.background.or_else(||default_bg).unwrap())
+                                    .map_err(|e| e.to_string()).unwrap();
+                                let texture = texture_creator
+                                    .create_texture_from_surface(&msg)
+                                    .map_err(|e| e.to_string()).unwrap();
+                                let q = texture.query();
+                                canvas.copy(&texture, None, Rect::new(0, (i as i32) * (q.height as i32), q.width, q.height)).unwrap();
                             }
                         }
                     }
