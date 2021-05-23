@@ -750,6 +750,22 @@ pub fn main() -> Result<(), String> {
     let mut state = NvimState::new();
     let chan = nvim.session.start_event_loop_channel();
 
+    nvim.set_client_info(
+        "nwin",
+        vec![("major".into(), "0".into()), ("minor".into(), "1".into()), ("patch".into(), "0".into())], 
+        "ui",
+        vec![],
+        vec![],
+    ).unwrap();
+
+    let chan_id = if let Ok(info) = nvim.get_api_info() {
+        info[0].as_u64().unwrap()
+    } else {
+        panic!("nvim_get_api_info() failed!");
+    };
+    let command = format!("autocmd VimLeave * call rpcnotify({}, 'nwin_vimleave')", chan_id);
+    nvim.command(&command).unwrap();
+
     let sdl_context = sdl2::init()?;
     let video_subsystem = sdl_context.video()?;
     let ttf_context = sdl2::ttf::init().map_err(|e| e.to_string())?;
@@ -855,6 +871,8 @@ pub fn main() -> Result<(), String> {
                 if let Some(pos) = last_flush_position {
                     do_redraw(&mut state, &mut sway, redraw_messages.drain(0..redraw_messages.len() - pos));
                 }
+            } else if str == "nwin_vimleave" {
+                break 'running;
             } else {
                 eprintln!("Unexpected message: {}", str);
             }
