@@ -236,11 +236,12 @@ impl NvimState {
         }
     }
     pub fn grid_clear (&mut self, id: NvimGridId) {
-        let grid = self.grids.get_mut(&id).unwrap();
-        for row in 0 .. grid.get_height() {
-            for column in 0 .. grid.get_width() {
-                grid.chars[row][column] = None;
-                grid.colors[row][column] = 0;
+        if let Some(grid) = self.grids.get_mut(&id) {
+            for row in 0 .. grid.get_height() {
+                for column in 0 .. grid.get_width() {
+                    grid.chars[row][column] = None;
+                    grid.colors[row][column] = 0;
+                }
             }
         }
     }
