@@ -392,7 +392,6 @@ impl NvimState {
         }
     }
     pub fn win_hide (&mut self, sway: &mut Connection, win: NvimWinId) {
-        println!("hiding {}", win);
         let title = format!("Nwin - Grid {}", win);
         // Find the parent node of the window being split
         let parent_node = sway.get_tree().unwrap().find(|node| {
@@ -407,7 +406,6 @@ impl NvimState {
             }
             false
         }).unwrap();
-        println!("{:?}", parent_node);
         if parent_node.layout != NodeLayout::Tabbed {
             let node = parent_node.find(|n| {
                 if let Some(p) = &n.window_properties {
@@ -732,6 +730,8 @@ pub fn main() -> Result<(), String> {
 
     let mut sway = Connection::new().unwrap();
 
+    // Create the command used to run neovim. We swallow the arguments we understand and forward
+    // the rest to neovim.
     let mut neovim_command = Command::new("nvim");
     neovim_command.args(&["--embed", "--cmd", "let g:started_by_nwin = v:true"]);
     let mut print_fps = false;
@@ -746,11 +746,13 @@ pub fn main() -> Result<(), String> {
         }
     }
 
+    // Create the neovim session
     let session = Session::new_child_cmd(&mut neovim_command).unwrap();
     let mut nvim = Neovim::new(session);
     let mut state = NvimState::new();
     let chan = nvim.session.start_event_loop_channel();
 
+    // Advertise UI name
     nvim.set_client_info(
         "nwin",
         vec![("major".into(), "0".into()), ("minor".into(), "1".into()), ("patch".into(), "0".into())], 
@@ -759,11 +761,25 @@ pub fn main() -> Result<(), String> {
         vec![],
     ).unwrap();
 
-    let chan_id = if let Ok(info) = nvim.get_api_info() {
-        info[0].as_u64().unwrap()
+    // Two things: retrieve neovim channel and figure out if server supports ext_win
+    let chan_id;
+    let mut has_ext_windows = false;
+    if let Ok(info) = nvim.get_api_info() {
+        chan_id = info[0].as_u64().unwrap();
+        for (key, value) in info[1].as_map().unwrap() {
+            if key.as_str().unwrap() == "ui_options" {
+                for option in value.as_array().unwrap() {
+                    if option.as_str().unwrap() == "ext_windows" {
+                        has_ext_windows = true;
+                    }
+                }
+            }
+        }
     } else {
         panic!("nvim_get_api_info() failed!");
-    };
+    }
+
+    // Use channel id to get warned when server closes.
     let command = format!("autocmd VimLeave * call rpcnotify({}, 'nwin_vimleave')", chan_id);
     nvim.command(&command).unwrap();
 
@@ -785,7 +801,7 @@ pub fn main() -> Result<(), String> {
     // grid id neovim creates
     // We then use this SDLGrid to compute the different sizes we need and then attach
     {
-        sdl_grids.insert(2, SDLGrid::new(&video_subsystem, 2, font_width, font_height));
+        sdl_grids.insert(2, SDLGrid::new(&video_subsystem, if has_ext_windows { 2 } else { 1 }, font_width, font_height));
         let the_grid = sdl_grids.get_mut(&2).unwrap();
 
         let surface = font
@@ -808,15 +824,18 @@ pub fn main() -> Result<(), String> {
 
         let row_count = the_grid.width / the_grid.font_width;
         let col_count = the_grid.height / the_grid.font_height;
-        nvim.ui_attach(
-            80,
-            20,
-            UiAttachOptions::new()
-            .set_rgb(true)
-            .set_messages_external(true)
-            .set_multigrid(true)
-            .set_windows_external(true)
-        ).unwrap();
+        let mut options = UiAttachOptions::new();
+        options.set_rgb(true);
+        options.set_linegrid_external(true);
+        if has_ext_windows {
+            options
+                .set_messages_external(true)
+                .set_multigrid(true)
+                .set_windows_external(true);
+        } else {
+            println!("Warning: neovim server does not support external windows. Continuing without.");
+        }
+        nvim.ui_attach(80, 20, &options).unwrap();
 
         the_grid.grid_x_offset = (the_grid.width - (col_count * the_grid.font_width)) / 2;
         the_grid.grid_y_offset = (the_grid.height - (row_count * the_grid.font_height)) / 2;
@@ -885,7 +904,7 @@ pub fn main() -> Result<(), String> {
             let default_bg = default_hl.background;
             let default_fg = default_hl.foreground;
             for (key, grid) in state.grids.iter_mut() {
-                if *key == 1 {
+                if has_ext_windows && *key == 1 {
                     grid.damages.truncate(0);
                     continue;
                 }
