@@ -177,6 +177,8 @@ pub struct NvimState {
     cursor_on: bool,
     message_attrs: Vec<u64>,
     message_contents: Vec<String>,
+    message_time: Instant,
+    has_moved_since_last_message: bool,
 }
 
 impl NvimState {
@@ -193,6 +195,8 @@ impl NvimState {
             cursor_on: true,
             message_attrs: vec![],
             message_contents: vec![],
+            message_time: Instant::now(),
+            has_moved_since_last_message: false,
         }
     }
     pub fn cmdline_hide (&mut self) {
@@ -255,6 +259,7 @@ impl NvimState {
         let old_pos = grid.get_cursor_pos();
         grid.set_cursor_pos(row, column);
         grid.damages.push(Damage::Cell { row: old_pos.0, column: old_pos.1, width: 1, height: 1 });
+        self.has_moved_since_last_message = true;
     }
     pub fn grid_resize (&mut self, id: NvimGridId, width: NvimWidth, height: NvimHeight) {
         let grid = if let Some(g) = self.grids.get_mut(&id) {
@@ -390,6 +395,8 @@ impl NvimState {
             self.message_attrs.push(args.next().unwrap().as_u64().unwrap());
             self.message_contents.push(args.next().unwrap().as_str().unwrap().to_string());
         }
+        self.message_time = Instant::now();
+        self.has_moved_since_last_message = false;
     }
     pub fn win_hide (&mut self, sway: &mut Connection, win: NvimWinId) {
         let title = format!("Nwin - Grid {}", win);
@@ -798,7 +805,7 @@ pub fn main() -> Result<(), String> {
 
     // We need to know the size of the first window in order to be able to attach the neovim GUI
     // So we cheat and create an SDLGrid for grid id 2 which we know will be the first "buffer"
-    // grid id neovim creates
+    // grid id neovim creates when ext_multigrid is present.
     // We then use this SDLGrid to compute the different sizes we need and then attach
     {
         sdl_grids.insert(2, SDLGrid::new(&video_subsystem, if has_ext_windows { 2 } else { 1 }, font_width, font_height));
@@ -1146,6 +1153,10 @@ pub fn main() -> Result<(), String> {
                     }
                 }
                 grid.damages.truncate(0);
+            }
+            let time_since_last_message = (Instant::now() - state.message_time).as_millis();
+            if state.has_moved_since_last_message && time_since_last_message > 3000 {
+                state.msg_clear();
             }
             for key in &grids_to_destroy {
                 sdl_grids.remove(&key);
