@@ -13,7 +13,7 @@ use sdl2::keyboard::Mod;
 // 4) RALT is ALTGR - frequently used to produce alternative characters. Results in things like
 //    <M-l>λ being inserted for a single <RALT-l>. Solution: use config to decide whether ralt
 //    should be listened to? Ignore ralt for now.
-fn with_mod (s: &str, m: Mod) -> Option<String> {
+fn with_mod(s: &str, m: Mod) -> Option<String> {
     let has_gui = (m & Mod::LGUIMOD != Mod::NOMOD) || (m & Mod::RGUIMOD != Mod::NOMOD);
     let has_ctrl = (m & Mod::LCTRLMOD != Mod::NOMOD) || (m & Mod::RCTRLMOD != Mod::NOMOD);
     let has_alt = m & Mod::LALTMOD != Mod::NOMOD/* || (m & Mod::RALTMOD != Mod::NOMOD)*/;
@@ -33,7 +33,9 @@ fn with_mod (s: &str, m: Mod) -> Option<String> {
         result.insert_str(2, ">");
     }
     let shifted = (m & Mod::LSHIFTMOD) != Mod::NOMOD || (m & Mod::RSHIFTMOD) != Mod::NOMOD;
-    if (shifted && !(m & Mod::CAPSMOD != Mod::NOMOD)) || (!shifted && (m & Mod::CAPSMOD != Mod::NOMOD)) {
+    if (shifted && !(m & Mod::CAPSMOD != Mod::NOMOD))
+        || (!shifted && (m & Mod::CAPSMOD != Mod::NOMOD))
+    {
         result.insert_str(1, "S-");
     }
     if has_gui {
@@ -48,16 +50,21 @@ fn with_mod (s: &str, m: Mod) -> Option<String> {
     Some(result)
 }
 
-pub fn nvim_char_representation (c: char) -> Option<&'static str> {
+pub fn nvim_char_representation(c: char) -> Option<&'static str> {
     match c {
         '<' => Some("<LT>"),
         ' ' => Some("<Space>"),
-        _ => None
+        _ => None,
     }
 }
 
-pub fn nvim_event_representation (event: Event) -> Option<String> {
-    if let Event::KeyDown { keycode: Some(k), keymod: m, .. } = event {
+pub fn nvim_event_representation(event: Event) -> Option<String> {
+    if let Event::KeyDown {
+        keycode: Some(k),
+        keymod: m,
+        ..
+    } = event
+    {
         match k {
             // Alpha
             Keycode::A => with_mod("a", m),
