@@ -473,11 +473,9 @@ impl NvimState {
             .unwrap()
             .find(|node| {
                 for n in &node.nodes {
-                    if let Some(p) = &n.window_properties {
-                        if let Some(str) = &p.title {
-                            if str == &title {
-                                return true;
-                            }
+                    if let Some(str) = &n.name {
+                        if str == &title {
+                            return true;
                         }
                     }
                 }
@@ -487,10 +485,8 @@ impl NvimState {
         if parent_node.layout != NodeLayout::Tabbed {
             let node = parent_node
                 .find(|n| {
-                    if let Some(p) = &n.window_properties {
-                        if let Some(str) = &p.title {
-                            return str == &title;
-                        }
+                    if let Some(str) = &n.name {
+                        return str == &title;
                     }
                     false
                 })
@@ -533,11 +529,9 @@ impl NvimState {
             .unwrap()
             .find(|node| {
                 for n in &node.nodes {
-                    if let Some(p) = &n.window_properties {
-                        if let Some(str) = &p.title {
-                            if str == &title {
-                                return true;
-                            }
+                    if let Some(str) = &n.name {
+                        if str == &title {
+                            return true;
                         }
                     }
                 }
@@ -547,10 +541,8 @@ impl NvimState {
         if parent_node.layout != desired_sway_layout {
             let node = parent_node
                 .find(|n| {
-                    if let Some(p) = &n.window_properties {
-                        if let Some(str) = &p.title {
-                            return str == &title;
-                        }
+                    if let Some(str) = &n.name {
+                        return str == &title;
                     }
                     false
                 })
@@ -1058,7 +1050,9 @@ pub fn main() -> Result<(), String> {
                                 col_count.into(),
                                 row_count.into(),
                             ) {
+                                println!("blah");
                                 eprintln!("{}", e);
+                                println!("blah");
                             }
                         }
                         // Resize sdl grid
