@@ -749,6 +749,8 @@ fn find_sdl_gl_driver() -> Option<u32> {
     None
 }
 
+static MAX_TEXTURE_SIZE : u32 = 16384;
+
 impl SDLGrid {
     pub fn new(
         video_subsystem: &VideoSubsystem,
@@ -778,7 +780,7 @@ impl SDLGrid {
             .create_texture_target(None, width, height)
             .unwrap();
         let atlas = texture_creator
-            .create_texture_target(None, 256 * font_width, font_height)
+            .create_texture_target(None, MAX_TEXTURE_SIZE, font_height)
             .unwrap();
         SDLGrid {
             canvas,
@@ -1189,6 +1191,9 @@ pub fn main() -> Result<(), String> {
                                                         (*atlas_next_slot, *font_width),
                                                     );
                                                     *atlas_next_slot += *font_width as i32;
+                                                    if *atlas_next_slot > (MAX_TEXTURE_SIZE as i32) {
+                                                        eprintln!("Texture atlas is full!");
+                                                    }
                                                 }
                                             })
                                             .unwrap();
