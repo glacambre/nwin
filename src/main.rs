@@ -25,7 +25,6 @@ use sdl2::video::Window;
 use sdl2::video::WindowContext;
 use sdl2::VideoSubsystem;
 
-use home::home_dir;
 use neovim_lib::{Neovim, NeovimApi, Session, UiAttachOptions, Value};
 
 type AtlasIndexKey = u64;
