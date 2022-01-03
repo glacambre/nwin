@@ -77,9 +77,11 @@ enum Damage {
     },
     Destroy {},
     VerticalScroll {
-        to: NvimRow,
-        from: NvimRow,
+        to_row: NvimRow,
+        from_row: NvimRow,
         height: NvimHeight,
+        from_col: NvimColumn,
+        width: NvimWidth,
     },
 }
 
@@ -382,9 +384,11 @@ impl NvimState {
                 }
             }
             grid.damages.push(Damage::VerticalScroll {
-                from: top + r,
-                to: top,
+                from_row: top + r,
+                to_row: top,
                 height: bottom - top,
+                from_col: left,
+                width: right - left,
             });
         } else if rows < 0 {
             // Moving characters down
@@ -398,9 +402,11 @@ impl NvimState {
             }
             // You don't have to understand this, just know it works.
             grid.damages.push(Damage::VerticalScroll {
-                from: top,
-                to: top + (rows.abs() as usize),
+                from_row: top,
+                to_row: top + (rows.abs() as usize),
                 height: bot - 1 - y,
+                from_col: left,
+                width: right - left,
             });
         }
     }
@@ -1216,7 +1222,7 @@ pub fn main() -> Result<(), String> {
                                         .unwrap();
                                 }
                             }
-                        } else if let Damage::VerticalScroll { from, to, height } = d {
+                        } else if let Damage::VerticalScroll { from_row, to_row, height, from_col, width } = d {
                             canvas
                                 .with_texture_canvas(big_texture_copy, |canvas| {
                                     canvas.copy(&big_texture, None, None).unwrap();
@@ -1225,17 +1231,17 @@ pub fn main() -> Result<(), String> {
                             canvas
                                 .with_texture_canvas(big_texture, |canvas| {
                                     let f = Rect::new(
-                                        0,
+                                        (*from_col as i32) * (*font_width as i32),
                                         (*grid_y_offset as i32)
-                                            + (*from as i32) * (*font_height as i32),
-                                        *width,
+                                            + (*from_row as i32) * (*font_height as i32),
+                                        (*width as u32) * (*font_width as u32),
                                         (*height as u32) * (*font_height as u32),
                                     );
                                     let t = Rect::new(
-                                        0,
+                                        (*from_col as i32) * (*font_width as i32),
                                         (*grid_y_offset as i32)
-                                            + (*to as i32) * (*font_height as i32),
-                                        *width,
+                                            + (*to_row as i32) * (*font_height as i32),
+                                        (*width as u32) * (*font_width as u32),
                                         (*height as u32) * (*font_height as u32),
                                     );
                                     canvas.copy(&big_texture_copy, f, t).unwrap();
