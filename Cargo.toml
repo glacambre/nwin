@@ -12,5 +12,5 @@ swayipc = { git = "https://github.com/glacambre/swayipc-rs" }
 home = "0.5.3"
 
 [dependencies.sdl2]
-version = "0.34"
+version = "0.35.1"
 features = ["ttf", "unsafe_textures"]
