@@ -1302,6 +1302,13 @@ pub fn main() -> Result<(), String> {
                                 cursor_rect.set_width(*font_width);
                                 cursor_rect.set_height(*font_height);
                                 canvas.fill_rect(cursor_rect).unwrap();
+                                if let Some(c) = grid.chars[row as usize][column as usize] {
+                                    let (pos, width) = atlas_index.get(&c).unwrap();
+                                    let color = hl_attr.background.or_else(|| default_bg).unwrap();
+                                    atlas.set_color_mod(color.r, color.g, color.b);
+                                    let from = Rect::new(*pos, 0, *width, *font_height);
+                                    canvas.copy(&atlas, from, cursor_rect).unwrap();
+                                }
                             }
                         }
                         for i in 0..state.message_contents.len() {
