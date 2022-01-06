@@ -451,6 +451,9 @@ impl NvimState {
                 "undercurl" => {
                     attr.undercurl = v.as_bool().unwrap();
                 }
+                "fg_indexed" => {
+                    // Do nothing, only useful for UIs running in terminals
+                }
                 _ => {
                     println!("Unsupported hl attr key {} in {:?}", key, map);
                 }
