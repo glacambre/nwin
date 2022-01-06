@@ -17,7 +17,9 @@ extern crate sdl2;
 
 use sdl2::event::{Event, WindowEvent};
 use sdl2::pixels::Color;
+use sdl2::pixels::PixelFormatEnum;
 use sdl2::rect::Rect;
+use sdl2::render::BlendMode;
 use sdl2::render::Canvas;
 use sdl2::render::Texture;
 use sdl2::render::TextureCreator;
@@ -27,7 +29,7 @@ use sdl2::VideoSubsystem;
 
 use neovim_lib::{Neovim, NeovimApi, Session, UiAttachOptions, Value};
 
-type AtlasIndexKey = u64;
+type AtlasIndexKey = char;
 type NvimRow = usize;
 type NvimColumn = usize;
 type NvimWidth = usize;
@@ -779,14 +781,15 @@ impl SDLGrid {
             .unwrap();
         let texture_creator = canvas.texture_creator();
         let big_texture = texture_creator
-            .create_texture_target(None, width, height)
+            .create_texture_target(PixelFormatEnum::ARGB8888, width, height)
             .unwrap();
         let big_texture_copy = texture_creator
-            .create_texture_target(None, width, height)
+            .create_texture_target(PixelFormatEnum::ARGB8888, width, height)
             .unwrap();
-        let atlas = texture_creator
-            .create_texture_target(None, MAX_TEXTURE_SIZE, font_height)
+        let mut atlas = texture_creator
+            .create_texture_target(PixelFormatEnum::ARGB8888, MAX_TEXTURE_SIZE, font_height)
             .unwrap();
+        atlas.set_blend_mode(BlendMode::Blend);
         SDLGrid {
             canvas,
             atlas,
@@ -804,6 +807,9 @@ impl SDLGrid {
         }
     }
 }
+
+const WHITE : Color = Color::RGBA(255,255,255,255);
+const TRANSPARENT : Color = Color::RGBA(200,0,128,0);
 
 pub fn main() -> Result<(), String> {
     env::remove_var("NVIM_LISTEN_ADDRESS");
@@ -896,16 +902,17 @@ pub fn main() -> Result<(), String> {
     // grid id neovim creates when ext_multigrid is present.
     // We then use this SDLGrid to compute the different sizes we need and then attach
     {
+        let grid_id = if has_ext_windows { 2 } else { 1 };
         sdl_grids.insert(
-            2,
+            grid_id,
             SDLGrid::new(
                 &video_subsystem,
-                if has_ext_windows { 2 } else { 1 },
+                grid_id,
                 font_width,
                 font_height,
             ),
         );
-        let the_grid = sdl_grids.get_mut(&2).unwrap();
+        let the_grid = sdl_grids.get_mut(&grid_id).unwrap();
 
         let surface = font
             .render("A")
@@ -947,16 +954,17 @@ pub fn main() -> Result<(), String> {
 
         the_grid.big_texture = the_grid
             .texture_creator
-            .create_texture_target(None, the_grid.width, the_grid.height)
+            .create_texture_target(PixelFormatEnum::ARGB8888, the_grid.width, the_grid.height)
             .unwrap();
         the_grid.big_texture_copy = the_grid
             .texture_creator
-            .create_texture_target(None, the_grid.width, the_grid.height)
+            .create_texture_target(PixelFormatEnum::ARGB8888, the_grid.width, the_grid.height)
             .unwrap();
         the_grid.atlas = the_grid
             .texture_creator
-            .create_texture_target(None, 256 * the_grid.font_width, the_grid.font_height)
+            .create_texture_target(PixelFormatEnum::ARGB8888, MAX_TEXTURE_SIZE, the_grid.font_height)
             .unwrap();
+        the_grid.atlas.set_blend_mode(BlendMode::Blend);
     }
 
     let mut event_pump = sdl_context.event_pump().map_err(|e| e.to_string())?;
@@ -1057,9 +1065,7 @@ pub fn main() -> Result<(), String> {
                                 col_count.into(),
                                 row_count.into(),
                             ) {
-                                println!("blah");
                                 eprintln!("{}", e);
-                                println!("blah");
                             }
                         }
                         // Resize sdl grid
@@ -1082,7 +1088,7 @@ pub fn main() -> Result<(), String> {
                         // drop(big_texture);
                         // allocate new big_texture
                         *big_texture = texture_creator
-                            .create_texture_target(None, size.0, size.1)
+                            .create_texture_target(PixelFormatEnum::ARGB8888, size.0, size.1)
                             .unwrap();
                         // restore backup
                         canvas
@@ -1102,7 +1108,7 @@ pub fn main() -> Result<(), String> {
                         // drop(big_texture_copy);
                         // allocate new backup buffer
                         *big_texture_copy = texture_creator
-                            .create_texture_target(None, size.0, size.1)
+                            .create_texture_target(PixelFormatEnum::ARGB8888, size.0, size.1)
                             .unwrap();
                         *width = size.0;
                         *height = size.1;
@@ -1131,58 +1137,45 @@ pub fn main() -> Result<(), String> {
                                     damage_right = grid.get_width();
                                 }
                                 for current_column in damage_left..damage_right {
-                                    let char_id = grid.chars[current_row][current_column]
+                                    let atlas_key = grid.chars[current_row][current_column]
                                         .or_else(|| Some(0 as char))
-                                        .unwrap()
-                                        as u64;
+                                        .unwrap();
                                     let attr_id = grid.colors[current_row][current_column];
-                                    let atlas_key = ((attr_id & (2u64.pow(32) - 1)) << 32)
-                                        | (char_id & (2u64.pow(32) - 1));
                                     if let None = atlas_index.get(&atlas_key) {
-                                        let hl_attr = state.hl_attrs.get(&attr_id).unwrap();
                                         canvas
                                             .with_texture_canvas(atlas, |canvas| {
-                                                let mut bg = hl_attr
-                                                    .background
-                                                    .or_else(|| default_bg)
-                                                    .unwrap();
-                                                let mut fg = hl_attr
-                                                    .foreground
-                                                    .or_else(|| default_fg)
-                                                    .unwrap();
-                                                if hl_attr.reverse {
-                                                    let tmp = bg;
-                                                    bg = fg;
-                                                    fg = tmp;
-                                                }
-                                                canvas.set_draw_color(bg);
-
                                                 if let Some(char) =
                                                     grid.chars[current_row][current_column]
                                                 {
                                                     let surface = font
                                                         .render(&char.to_string())
-                                                        .blended(fg)
+                                                        .blended(WHITE)
                                                         .map_err(|e| e.to_string())
                                                         .unwrap();
-                                                    let texture = texture_creator
-                                                        .create_texture_from_surface(&surface)
-                                                        .map_err(|e| e.to_string())
-                                                        .unwrap();
-                                                    let t = texture.query();
                                                     let cell_rect = Rect::new(
                                                         *atlas_next_slot,
                                                         0,
-                                                        t.width,
-                                                        t.height,
+                                                        surface.width(),
+                                                        surface.height(),
                                                     );
+                                                    let glyph = surface
+                                                        .into_canvas()
+                                                        .unwrap();
+                                                    let mut texture = texture_creator
+                                                        .create_texture_target(PixelFormatEnum::ARGB8888, cell_rect.width(), cell_rect.height())
+                                                        .unwrap();
+                                                    texture.update(None, &glyph.read_pixels(None, PixelFormatEnum::ARGB8888).unwrap(), 4 * cell_rect.width() as usize).unwrap();
+                                                    canvas.set_draw_color(TRANSPARENT);
                                                     canvas.fill_rect(cell_rect).unwrap();
                                                     canvas.copy(&texture, None, cell_rect).unwrap();
                                                     atlas_index.insert(
                                                         atlas_key,
-                                                        (*atlas_next_slot, t.width),
+                                                        (*atlas_next_slot, cell_rect.width()),
                                                     );
-                                                    *atlas_next_slot += t.width as i32;
+                                                    *atlas_next_slot += cell_rect.width() as i32;
+                                                    if *atlas_next_slot > (MAX_TEXTURE_SIZE as i32) {
+                                                        eprintln!("Texture atlas is full!");
+                                                    }
                                                 } else {
                                                     let cell_rect = Rect::new(
                                                         *atlas_next_slot,
@@ -1190,7 +1183,9 @@ pub fn main() -> Result<(), String> {
                                                         *font_width,
                                                         *font_height,
                                                     );
+                                                    canvas.set_draw_color(TRANSPARENT);
                                                     canvas.fill_rect(cell_rect).unwrap();
+
                                                     atlas_index.insert(
                                                         atlas_key,
                                                         (*atlas_next_slot, *font_width),
@@ -1203,9 +1198,24 @@ pub fn main() -> Result<(), String> {
                                             })
                                             .unwrap();
                                     }
+                                    let hl_attr = state.hl_attrs.get(&attr_id).unwrap();
                                     let (pos, width) = atlas_index.get(&atlas_key).unwrap();
                                     canvas
                                         .with_texture_canvas(big_texture, |canvas| {
+                                            let mut bg = hl_attr
+                                                .background
+                                                .or_else(|| default_bg)
+                                                .unwrap();
+                                            let mut fg = hl_attr
+                                                .foreground
+                                                .or_else(|| default_fg)
+                                                .unwrap();
+                                            if hl_attr.reverse {
+                                                let tmp = bg;
+                                                bg = fg;
+                                                fg = tmp;
+                                            }
+
                                             let from = Rect::new(*pos, 0, *width, *font_height);
                                             let to = Rect::new(
                                                 (*grid_x_offset as i32)
@@ -1216,6 +1226,9 @@ pub fn main() -> Result<(), String> {
                                                 *width,
                                                 *font_height,
                                             );
+                                            canvas.set_draw_color(bg);
+                                            canvas.fill_rect(to).unwrap();
+                                            atlas.set_color_mod(fg.r, fg.g, fg.b);
                                             canvas.copy(&atlas, from, to).unwrap();
                                         })
                                         .unwrap();
