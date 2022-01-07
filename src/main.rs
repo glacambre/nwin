@@ -69,6 +69,7 @@ impl TryFrom<u64> for SplitDirection {
     }
 }
 
+#[derive(Debug)]
 enum Damage {
     Cell {
         row: NvimRow,
@@ -407,11 +408,10 @@ impl NvimState {
                 }
                 y -= 1
             }
-            // You don't have to understand this, just know it works.
             grid.damages.push(Damage::VerticalScroll {
                 from_row: top,
                 to_row: top + (rows.abs() as usize),
-                height: bot - 1 - y,
+                height: bot - top - (rows.abs() as usize),
                 from_col: left,
                 width: right - left,
             });
