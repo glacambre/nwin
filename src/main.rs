@@ -294,31 +294,37 @@ impl NvimState {
             grid.chars.truncate(height);
             grid.colors.truncate(height);
         } else {
-            grid.damages.push(Damage::Cell {
-                row: grid.get_height(),
-                column: 0,
-                width,
-                height: height - grid.get_height(),
-            });
+            // grid.damages.push(Damage::Cell {
+            //     row: grid.get_height(),
+            //     column: 0,
+            //     width,
+            //     height: height - grid.get_height(),
+            // });
             for _count in grid.get_height()..height {
                 grid.chars.push(vec![None; width]);
                 grid.colors.push(vec![0; width]);
             }
         }
         if grid.get_width() != width {
-            if grid.get_width() < width {
-                grid.damages.push(Damage::Cell {
-                    row: 0,
-                    column: grid.get_width(),
-                    width: width - grid.get_width(),
-                    height: grid.get_height(),
-                });
-            }
+            // if grid.get_width() < width {
+            //     grid.damages.push(Damage::Cell {
+            //         row: 0,
+            //         column: grid.get_width(),
+            //         width: width - grid.get_width(),
+            //         height: grid.get_height(),
+            //     });
+            // }
             for row in 0..grid.get_height() {
                 grid.chars[row].resize(width as usize, Some(' '));
                 grid.colors[row].resize(width as usize, 0);
             }
         }
+        grid.damages.push(Damage::Cell {
+            row: 0,
+            column: 0,
+            width: grid.get_width(),
+            height: grid.get_height(),
+        });
     }
     pub fn grid_line(
         &mut self,
@@ -1091,7 +1097,7 @@ pub fn main() -> Result<(), String> {
                         // drop(big_texture);
                         // allocate new big_texture
                         *big_texture = texture_creator
-                            .create_texture_target(PixelFormatEnum::ARGB8888, size.0, size.1)
+                            .create_texture_target(None, size.0, size.1)
                             .unwrap();
                         // restore backup
                         canvas
@@ -1111,7 +1117,7 @@ pub fn main() -> Result<(), String> {
                         // drop(big_texture_copy);
                         // allocate new backup buffer
                         *big_texture_copy = texture_creator
-                            .create_texture_target(PixelFormatEnum::ARGB8888, size.0, size.1)
+                            .create_texture_target(None, size.0, size.1)
                             .unwrap();
                         *width = size.0;
                         *height = size.1;
