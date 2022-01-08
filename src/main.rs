@@ -820,6 +820,9 @@ impl SDLGrid {
 const WHITE : Color = Color::RGBA(255,255,255,255);
 const TRANSPARENT : Color = Color::RGBA(200,0,128,0);
 
+const REF: &str = include_str!("../.git/HEAD");
+const REF_MASTER: &str = include_str!("../.git/refs/heads/master");
+
 pub fn main() -> Result<(), String> {
     env::remove_var("NVIM_LISTEN_ADDRESS");
 
@@ -847,6 +850,11 @@ pub fn main() -> Result<(), String> {
     let mut state = NvimState::new();
     let chan = nvim.session.start_event_loop_channel();
 
+    let commit = if REF.starts_with("ref: refs/heads/master") {
+        REF_MASTER
+    } else {
+        REF
+    }.trim();
     // Advertise UI name
     nvim.set_client_info(
         "nwin",
@@ -854,6 +862,7 @@ pub fn main() -> Result<(), String> {
             ("major".into(), "0".into()),
             ("minor".into(), "1".into()),
             ("patch".into(), "0".into()),
+            ("commit".into(), commit.into()),
         ],
         "ui",
         vec![],
