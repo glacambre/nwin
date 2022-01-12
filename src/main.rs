@@ -984,6 +984,10 @@ pub fn main() -> Result<(), String> {
     let mut frame_count = 0;
     let mut grids_to_destroy = vec![];
 
+    // Note: this can't be inside of loop because we might sometimes draw a frame between two
+    // events that have the same timestamp.
+    let mut last_keydown_timestamp = 0;
+
     'running: loop {
         grids_to_destroy.truncate(0);
         let now = Instant::now();
@@ -1384,22 +1388,25 @@ pub fn main() -> Result<(), String> {
                         nvim.quit_no_save().unwrap();
                         break 'running;
                     }
-                    Event::KeyDown { .. } => {
+                    Event::KeyDown { timestamp, .. } => {
                         if let Some(str) = keys::nvim_event_representation(event) {
                             input_string.push_str(&str);
+                            last_keydown_timestamp = timestamp;
                         }
                     }
-                    Event::TextInput { text: s, .. } => {
-                        for c in s.chars() {
-                            // NOTE: We ignore space because it has a non-literal repr and it's better
-                            // to have it go through the keydown nvim.input, in order to be able to
-                            // handle both <Space> and <S-Space> (we can't tell <S-Space> from a
-                            // TextInput event).
-                            if c != ' ' {
-                                if let Some(s) = keys::nvim_char_representation(c) {
-                                    input_string.push_str(s);
-                                } else {
-                                    input_string.push_str(&c.to_string());
+                    Event::TextInput { timestamp, text: ref s, .. } => {
+                        if timestamp != last_keydown_timestamp {
+                            for c in s.chars() {
+                                // NOTE: We ignore space because it has a non-literal repr and it's better
+                                // to have it go through the keydown nvim.input, in order to be able to
+                                // handle both <Space> and <S-Space> (we can't tell <S-Space> from a
+                                // TextInput event).
+                                if c != ' ' {
+                                    if let Some(s) = keys::nvim_char_representation(c) {
+                                        input_string.push_str(s);
+                                    } else {
+                                        input_string.push_str(&c.to_string());
+                                    }
                                 }
                             }
                         }
