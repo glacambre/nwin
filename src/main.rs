@@ -980,6 +980,7 @@ pub fn main() -> Result<(), String> {
 
     let mut cursor_rect = Rect::new(0, 0, 0, 0);
     let mut redraw_messages = VecDeque::new();
+    let mut last_frame_check = Instant::now();
     let mut last_second = Instant::now();
     let mut frame_count = 0;
     let mut grids_to_destroy = vec![];
@@ -1129,6 +1130,22 @@ pub fn main() -> Result<(), String> {
                         *grid_y_offset = new_y_offset;
                     }
                 }
+
+                if last_frame_check.elapsed().as_secs() >= 60 {
+                    eprintln!("No frame for more than a minute. Resetting atlas.");
+                    atlas_index.clear();
+                    grid.damages.push(
+                        Damage::Cell {
+                            row: 0,
+                            column: 0,
+                            width: grid.get_width(),
+                            height: grid.get_height(),
+                        }
+                    );
+                    *atlas_next_slot = 0;
+                }
+                last_frame_check = Instant::now();
+
                 if grid.get_width() > 0 && grid.get_height() > 0 {
                     for d in &grid.damages {
                         if let Damage::Cell {
