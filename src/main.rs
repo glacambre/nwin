@@ -1036,6 +1036,24 @@ pub fn main() -> Result<(), String> {
             }
         }
 
+        if last_frame_check.elapsed().as_secs() >= 60 {
+            eprintln!("No frame for more than a minute. Resetting atlas.");
+            for (key, grid) in state.grids.iter_mut() {
+                let s = sdl_grids.get_mut(key).unwrap();
+                s.atlas_index.clear();
+                s.atlas_next_slot = 0;
+                grid.damages.push(
+                    Damage::Cell {
+                        row: 0,
+                        column: 0,
+                        width: grid.get_width(),
+                        height: grid.get_height(),
+                    }
+                );
+            }
+        }
+        last_frame_check = Instant::now();
+
         // 3) Redraw grid damages
         if let Some(default_hl) = state.hl_attrs.get(&0) {
             let default_bg = default_hl.background;
@@ -1139,21 +1157,6 @@ pub fn main() -> Result<(), String> {
                         *grid_y_offset = new_y_offset;
                     }
                 }
-
-                if last_frame_check.elapsed().as_secs() >= 60 {
-                    eprintln!("No frame for more than a minute. Resetting atlas.");
-                    atlas_index.clear();
-                    grid.damages.push(
-                        Damage::Cell {
-                            row: 0,
-                            column: 0,
-                            width: grid.get_width(),
-                            height: grid.get_height(),
-                        }
-                    );
-                    *atlas_next_slot = 0;
-                }
-                last_frame_check = Instant::now();
 
                 if grid.get_width() > 0 && grid.get_height() > 0 {
                     for d in &grid.damages {
