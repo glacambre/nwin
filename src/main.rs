@@ -222,12 +222,12 @@ impl NvimState {
     ) {
         self.cmdline_content = content.into_iter().fold("".to_string(), |s, v| {
             s + if let Some(a) = v.as_array() {
-                a[1].as_str().unwrap()
+                a[1].as_str().or(Some("")).unwrap()
             } else {
                 ""
             }
         });
-        self.cmdline_firstc = firstc.chars().next().unwrap();
+        self.cmdline_firstc = firstc.chars().next().or(Some(' ')).unwrap();
         self.cmdline_pos = pos;
         self.cmdline_prompt = prompt.to_string();
         self.cmdline_shown = true;
@@ -268,21 +268,23 @@ impl NvimState {
         }
     }
     pub fn grid_destroy(&mut self, id: NvimGridId) {
-        let grid = self.grids.get_mut(&id).unwrap();
-        grid.damages.push(Damage::Destroy {});
+        if let Some(grid) = self.grids.get_mut(&id) {
+            grid.damages.push(Damage::Destroy {});
+        }
     }
     pub fn grid_cursor_goto(&mut self, id: NvimGridId, row: NvimRow, column: NvimColumn) {
         self.cursor_grid = id;
-        let grid = self.grids.get_mut(&id).unwrap();
-        let old_pos = grid.get_cursor_pos();
-        grid.set_cursor_pos(row, column);
-        grid.damages.push(Damage::Cell {
-            row: old_pos.0,
-            column: old_pos.1,
-            width: 1,
-            height: 1,
-        });
-        self.has_moved_since_last_message = true;
+        if let Some(grid) = self.grids.get_mut(&id) {
+            let old_pos = grid.get_cursor_pos();
+            grid.set_cursor_pos(row, column);
+            grid.damages.push(Damage::Cell {
+                row: old_pos.0,
+                column: old_pos.1,
+                width: 1,
+                height: 1,
+            });
+            self.has_moved_since_last_message = true;
+        }
     }
     pub fn grid_resize(&mut self, id: NvimGridId, width: NvimWidth, height: NvimHeight) {
         let grid = if let Some(g) = self.grids.get_mut(&id) {
@@ -376,45 +378,46 @@ impl NvimState {
         _cols: i64,
     ) {
         assert!(_cols == 0);
-        let grid = self.grids.get_mut(&id).unwrap();
-        if rows > 0 {
-            // Moving characters up
-            let r: usize = rows as usize;
-            let bottom = if (bot + r) >= grid.get_height() {
-                grid.get_height() - r
-            } else {
-                bot
-            };
-            for y in top..bottom {
-                for x in left..right {
-                    grid.chars[y][x] = grid.chars[y + r][x];
-                    grid.colors[y][x] = grid.colors[y + r][x];
+        if let Some(grid) = self.grids.get_mut(&id) {
+            if rows > 0 {
+                // Moving characters up
+                let r: usize = rows as usize;
+                let bottom = if (bot + r) >= grid.get_height() {
+                    grid.get_height() - r
+                } else {
+                    bot
+                };
+                for y in top..bottom {
+                    for x in left..right {
+                        grid.chars[y][x] = grid.chars[y + r][x];
+                        grid.colors[y][x] = grid.colors[y + r][x];
+                    }
                 }
-            }
-            grid.damages.push(Damage::VerticalScroll {
-                from_row: top + r,
-                to_row: top,
-                height: bottom - top,
-                from_col: left,
-                width: right - left,
-            });
-        } else if rows < 0 {
-            // Moving characters down
-            let mut y = bot - 1;
-            while y >= top && ((y as i64) + rows) >= 0 {
-                for x in left..right {
-                    grid.chars[y][x] = grid.chars[((y as i64) + rows) as usize][x];
-                    grid.colors[y][x] = grid.colors[((y as i64) + rows) as usize][x];
+                grid.damages.push(Damage::VerticalScroll {
+                    from_row: top + r,
+                    to_row: top,
+                    height: bottom - top,
+                    from_col: left,
+                    width: right - left,
+                });
+            } else if rows < 0 {
+                // Moving characters down
+                let mut y = bot - 1;
+                while y >= top && ((y as i64) + rows) >= 0 {
+                    for x in left..right {
+                        grid.chars[y][x] = grid.chars[((y as i64) + rows) as usize][x];
+                        grid.colors[y][x] = grid.colors[((y as i64) + rows) as usize][x];
+                    }
+                    y -= 1
                 }
-                y -= 1
+                grid.damages.push(Damage::VerticalScroll {
+                    from_row: top,
+                    to_row: top + (rows.abs() as usize),
+                    height: bot - top - (rows.abs() as usize),
+                    from_col: left,
+                    width: right - left,
+                });
             }
-            grid.damages.push(Damage::VerticalScroll {
-                from_row: top,
-                to_row: top + (rows.abs() as usize),
-                height: bot - top - (rows.abs() as usize),
-                from_col: left,
-                width: right - left,
-            });
         }
     }
     pub fn hl_attr_define(&mut self, id: u64, map: &Vec<(Value, Value)>) {
@@ -425,7 +428,7 @@ impl NvimState {
             self.hl_attrs.get_mut(&id).unwrap()
         };
         for (k, v) in map {
-            let key = k.as_str().unwrap();
+            let key = k.as_str().or(Some("")).unwrap();
             match key {
                 "foreground" => {
                     attr.foreground = v.as_u64().map(|c| to_sdl_color(c));
@@ -472,11 +475,13 @@ impl NvimState {
     }
     pub fn msg_show(&mut self, _kind: &str, content: &Vec<Value>, _replace_last: bool) {
         for c in content {
-            let mut args = c.as_array().unwrap().into_iter();
-            self.message_attrs
-                .push(args.next().unwrap().as_u64().unwrap());
-            self.message_contents
-                .push(args.next().unwrap().as_str().unwrap().to_string());
+            if let Some(arr) = c.as_array() {
+                let mut args = arr.into_iter();
+                self.message_attrs
+                    .push(args.next().map_or(0, |v| v.as_u64().or(Some(0)).unwrap()));
+                self.message_contents
+                    .push(args.next().map_or("".to_string(), |v| v.as_str().or(Some("")).unwrap().to_string()));
+            }
         }
         self.message_time = Instant::now();
         self.has_moved_since_last_message = false;
@@ -1408,7 +1413,7 @@ pub fn main() -> Result<(), String> {
 
         // Use the time we have left before having to display the next frame to read events from
         // ui and forward them to neovim if necessary.
-        let mut time_left = (1000 / max_fps) - i64::try_from(now.elapsed().as_millis()).unwrap();
+        let mut time_left = (1000 / max_fps) - i64::try_from(now.elapsed().as_millis()).map_or(0, |v| v);
         while time_left > 1 {
             let mut input_string = "".to_owned();
             if let Some(event) = event_pump.wait_event_timeout(time_left as u32) {
@@ -1454,26 +1459,34 @@ pub fn main() -> Result<(), String> {
                         {
                             match win_event {
                                 WindowEvent::Close => {
-                                    let window_id = state.grids.get(key).unwrap().window_id;
-                                    nvim.call_function(
-                                        "nvim_win_close",
-                                        vec![window_id.into(), true.into()],
-                                    )
-                                    .unwrap();
+                                    if let Some(grid) = state.grids.get(key) {
+                                        let window_id = grid.window_id;
+                                        if let Err(_) = nvim.call_function(
+                                            "nvim_win_close",
+                                            vec![window_id.into(), true.into()],
+                                        ) {
+                                            eprintln!("nvim_win_close({})", window_id);
+                                        }
+                                    }
                                 }
                                 WindowEvent::FocusLost => {
-                                    nvim.command("doautocmd FocusLost").unwrap();
+                                    if let Err(_) = nvim.command("doautocmd FocusGained") {
+                                        eprintln!("doautocmd FocusLost failed");
+                                    }
                                 }
                                 WindowEvent::FocusGained => {
-                                    nvim.command("doautocmd FocusGained").unwrap();
+                                    if let Err(_) = nvim.command("doautocmd FocusGained") {
+                                        eprintln!("doautocmd FocusGained failed");
+                                    }
                                     // Can't unwrap because on app startup we'll have an os window but
                                     // no neovim window
                                     if let Some(grid) = state.grids.get(key) {
-                                        nvim.call_function(
+                                        if let Err(_) = nvim.call_function(
                                             "nvim_set_current_win",
                                             vec![grid.window_id.into()],
-                                        )
-                                        .unwrap();
+                                        ) {
+                                            eprintln!("nvim_set_current_win({}) failed", grid.window_id);
+                                        }
                                     }
                                 }
                                 _ => {}
@@ -1484,9 +1497,11 @@ pub fn main() -> Result<(), String> {
                 }
             }
             if input_string != "" {
-                nvim.input(&input_string).unwrap();
+                if let Err(_) = nvim.input(&input_string) {
+                    eprintln!("nvim_input('{}') failed", &input_string);
+                }
             }
-            time_left = (1000 / max_fps) - i64::try_from(now.elapsed().as_millis()).unwrap();
+            time_left = (1000 / max_fps) - i64::try_from(now.elapsed().as_millis()).map_or(0, |v| v);
         }
     }
 
